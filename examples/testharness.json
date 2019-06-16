@@ -1,0 +1,19 @@
+{
+  "comment": "SSLproxy tests",
+  "testharnesses": {
+    "1": {
+      "comment": "HTTPS tests",
+      "testsets": {
+        "1": "../../examples/https_testset_1.json",
+        "2": "../../examples/https_testset_2.json"
+      }
+    },
+    "2": {
+      "comment": "HTTP tests",
+      "testsets": {
+        "1": "../../examples/http_testset_1.json",
+        "2": "../../examples/http_testset_2.json"
+      }
+    }
+  }
+}

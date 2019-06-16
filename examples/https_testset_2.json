@@ -1,0 +1,138 @@
+{
+  "comment": "Tests for Accept-Encoding, Via, X-Forwarded-For, and Referer headers",
+  "proto": {
+    "proto": "ssl",
+    "crt": "../../examples/server.crt",
+    "key": "../../examples/server.key"
+  },
+  "proxy": {
+    "ip": "127.0.0.1",
+    "port": "8444"
+  },
+  "server": {
+    "ip": "127.0.0.1",
+    "port": "9444"
+  },
+  "tests": {
+    "1": {
+      "comment": "Does not remove Accept-Encoding by default (it's a config option)",
+      "states": {
+        "1": {
+          "testend": "client",
+          "cmd": "send",
+          "payload": "GET / HTTP/1.1\r\nHost: comixwall.org\r\nAccept-Encoding: encoding\r\n\r\n"
+        },
+        "2": {
+          "testend": "server",
+          "cmd": "recv",
+          "payload": ""
+        },
+        "3": {
+          "testend": "server",
+          "cmd": "recv",
+          "payload": "GET / HTTP/1.1\r\nHost: comixwall.org\r\nAccept-Encoding: encoding\r\nConnection: close\r\n\r\n"
+        },
+        "4": {
+          "testend": "server",
+          "cmd": "send",
+          "payload": "HTTP/1.1 302 Found\r\nLocation: sslproxy\r\n\r\n"
+        },
+        "5": {
+          "testend": "client",
+          "cmd": "recv",
+          "payload": "HTTP/1.1 302 Found\r\nLocation: sslproxy\r\n\r\n"
+        }
+      }
+    },
+    "2": {
+      "comment": "Removes Via",
+      "states": {
+        "1": {
+          "testend": "client",
+          "cmd": "send",
+          "payload": "GET / HTTP/1.1\r\nHost: comixwall.org\r\nVia: via\r\n\r\n"
+        },
+        "2": {
+          "testend": "server",
+          "cmd": "recv",
+          "payload": ""
+        },
+        "3": {
+          "testend": "server",
+          "cmd": "recv",
+          "payload": "GET / HTTP/1.1\r\nHost: comixwall.org\r\nConnection: close\r\n\r\n"
+        },
+        "4": {
+          "testend": "server",
+          "cmd": "send",
+          "payload": "HTTP/1.1 302 Found\r\nLocation: sslproxy\r\n\r\n"
+        },
+        "5": {
+          "testend": "client",
+          "cmd": "recv",
+          "payload": "HTTP/1.1 302 Found\r\nLocation: sslproxy\r\n\r\n"
+        }
+      }
+    },
+    "3": {
+      "comment": "Removes X-Forwarded-For",
+      "states": {
+        "1": {
+          "testend": "client",
+          "cmd": "send",
+          "payload": "GET / HTTP/1.1\r\nHost: comixwall.org\r\nX-Forwarded-For: x-forwarded-for\r\n\r\n"
+        },
+        "2": {
+          "testend": "server",
+          "cmd": "recv",
+          "payload": ""
+        },
+        "3": {
+          "testend": "server",
+          "cmd": "recv",
+          "payload": "GET / HTTP/1.1\r\nHost: comixwall.org\r\nConnection: close\r\n\r\n"
+        },
+        "4": {
+          "testend": "server",
+          "cmd": "send",
+          "payload": "HTTP/1.1 302 Found\r\nLocation: sslproxy\r\n\r\n"
+        },
+        "5": {
+          "testend": "client",
+          "cmd": "recv",
+          "payload": "HTTP/1.1 302 Found\r\nLocation: sslproxy\r\n\r\n"
+        }
+      }
+    },
+    "4": {
+      "comment": "Removes Referer",
+      "states": {
+        "1": {
+          "testend": "client",
+          "cmd": "send",
+          "payload": "GET / HTTP/1.1\r\nHost: comixwall.org\r\nReferer: referer\r\n\r\n"
+        },
+        "2": {
+          "testend": "server",
+          "cmd": "recv",
+          "payload": ""
+        },
+        "3": {
+          "testend": "server",
+          "cmd": "recv",
+          "payload": "GET / HTTP/1.1\r\nHost: comixwall.org\r\nConnection: close\r\n\r\n"
+        },
+        "4": {
+          "testend": "server",
+          "cmd": "send",
+          "payload": "HTTP/1.1 302 Found\r\nLocation: sslproxy\r\n\r\n"
+        },
+        "5": {
+          "testend": "client",
+          "cmd": "recv",
+          "payload": "HTTP/1.1 302 Found\r\nLocation: sslproxy\r\n\r\n"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,137 @@
+{
+  "comment": "Tests for SSLproxy, Connection, Upgrade, and Keep-Alive headers",
+  "proto": {
+    "proto": "tcp"
+  },
+  "proxy": {
+    "ip": "127.0.0.1",
+    "port": "8180"
+  },
+  "server": {
+    "ip": "127.0.0.1",
+    "port": "9180"
+  },
+  "tests": {
+    "1": {
+      "comment": "Removes any extra SSLproxy line",
+      "states": {
+        "1": {
+          "testend": "client",
+          "cmd": "send",
+          "payload": "GET / HTTP/1.1\r\nHost: comixwall.org\r\nSSLproxy: sslproxy\r\n\r\n"
+        },
+        "2": {
+          "testend": "server",
+          "cmd": "recv",
+          "payload": "",
+          "comment": "To obtain server crt, SSLproxy srvdst connects/disconnects to the server without sending any data, so we should have this as the second state in all tests"
+        },
+        "3": {
+          "testend": "server",
+          "cmd": "recv",
+          "payload": "GET / HTTP/1.1\r\nHost: comixwall.org\r\nConnection: close\r\n\r\n"
+        },
+        "4": {
+          "testend": "server",
+          "cmd": "send",
+          "payload": "HTTP/1.1 302 Found\r\nLocation: sslproxy\r\n\r\n"
+        },
+        "5": {
+          "testend": "client",
+          "cmd": "recv",
+          "payload": "HTTP/1.1 302 Found\r\nLocation: sslproxy\r\n\r\n"
+        }
+      }
+    },
+    "2": {
+      "comment": "Changes Connection header to close",
+      "states": {
+        "1": {
+          "testend": "client",
+          "cmd": "send",
+          "payload": "GET / HTTP/1.1\r\nHost: comixwall.org\r\nConnection: Keep-Alive\r\n\r\n"
+        },
+        "2": {
+          "testend": "server",
+          "cmd": "recv",
+          "payload": ""
+        },
+        "3": {
+          "testend": "server",
+          "cmd": "recv",
+          "payload": "GET / HTTP/1.1\r\nHost: comixwall.org\r\nConnection: close\r\n\r\n"
+        },
+        "4": {
+          "testend": "server",
+          "cmd": "send",
+          "payload": "HTTP/1.1 302 Found\r\nLocation: sslproxy\r\n\r\n"
+        },
+        "5": {
+          "testend": "client",
+          "cmd": "recv",
+          "payload": "HTTP/1.1 302 Found\r\nLocation: sslproxy\r\n\r\n"
+        }
+      }
+    },
+    "3": {
+      "comment": "Suppresses upgrading to SSL/TLS, WebSockets or HTTP/2",
+      "states": {
+        "1": {
+          "testend": "client",
+          "cmd": "send",
+          "payload": "GET / HTTP/1.1\r\nHost: comixwall.org\r\nUpgrade: websocket\r\n\r\n"
+        },
+        "2": {
+          "testend": "server",
+          "cmd": "recv",
+          "payload": ""
+        },
+        "3": {
+          "testend": "server",
+          "cmd": "recv",
+          "payload": "GET / HTTP/1.1\r\nHost: comixwall.org\r\nConnection: close\r\n\r\n"
+        },
+        "4": {
+          "testend": "server",
+          "cmd": "send",
+          "payload": "HTTP/1.1 302 Found\r\nLocation: sslproxy\r\n\r\n"
+        },
+        "5": {
+          "testend": "client",
+          "cmd": "recv",
+          "payload": "HTTP/1.1 302 Found\r\nLocation: sslproxy\r\n\r\n"
+        }
+      }
+    },
+    "4": {
+      "comment": "Removes Keep-Alive",
+      "states": {
+        "1": {
+          "testend": "client",
+          "cmd": "send",
+          "payload": "GET / HTTP/1.1\r\nHost: comixwall.org\r\nKeep-Alive: keep-alive\r\n\r\n"
+        },
+        "2": {
+          "testend": "server",
+          "cmd": "recv",
+          "payload": ""
+        },
+        "3": {
+          "testend": "server",
+          "cmd": "recv",
+          "payload": "GET / HTTP/1.1\r\nHost: comixwall.org\r\nConnection: close\r\n\r\n"
+        },
+        "4": {
+          "testend": "server",
+          "cmd": "send",
+          "payload": "HTTP/1.1 302 Found\r\nLocation: sslproxy\r\n\r\n"
+        },
+        "5": {
+          "testend": "client",
+          "cmd": "recv",
+          "payload": "HTTP/1.1 302 Found\r\nLocation: sslproxy\r\n\r\n"
+        }
+      }
+    }
+  }
+}
