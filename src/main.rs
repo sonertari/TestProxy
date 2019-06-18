@@ -319,6 +319,86 @@ impl Manager {
         }
     }
 
+    fn configure_proto(&self, testset: &TestSet) -> ProtoConfig {
+        let mut proto = Proto::Tcp;
+
+        let mut connect_timeout = 10;
+        if testset.proto.contains_key("connect_timeout") {
+            connect_timeout = testset.proto["connect_timeout"].parse().expect("Cannot parse connect_timeout");
+        }
+
+        let mut read_timeout = 10;
+        if testset.proto.contains_key("read_timeout") {
+            read_timeout = testset.proto["read_timeout"].parse().expect("Cannot parse read_timeout");
+        }
+
+        let mut write_timeout = 10;
+        if testset.proto.contains_key("write_timeout") {
+            write_timeout = testset.proto["write_timeout"].parse().expect("Cannot parse write_timeout");
+        }
+
+        let mut ip_ttl = 15;
+        if testset.proto.contains_key("ip_ttl") {
+            ip_ttl = testset.proto["ip_ttl"].parse().expect("Cannot parse ip_ttl");
+        }
+
+        let mut tcp_nodelay = true;
+        if testset.proto.contains_key("tcp_nodelay") && testset.proto["tcp_nodelay"].eq("no") {
+            tcp_nodelay = false;
+        }
+
+        let mut crt = "".to_string();
+        let mut key = "".to_string();
+        let mut verify_peer = false;
+        let mut use_sni = false;
+        let mut verify_hostname = false;
+
+        if testset.proto["proto"].eq("ssl") {
+            proto = Proto::Ssl;
+
+            if testset.proto.contains_key("crt") {
+                crt = testset.proto["crt"].clone();
+            }
+            if testset.proto.contains_key("key") {
+                key = testset.proto["key"].clone();
+            }
+            if testset.proto.contains_key("verify_peer") && testset.proto["verify_peer"].eq("yes") {
+                verify_peer = true;
+            }
+            if testset.proto.contains_key("use_sni") && testset.proto["use_sni"].eq("yes") {
+                use_sni = true;
+            }
+            if testset.proto.contains_key("verify_hostname") && testset.proto["verify_hostname"].eq("yes") {
+                verify_hostname = true;
+            }
+        }
+        ProtoConfig { proto, connect_timeout, read_timeout, write_timeout, ip_ttl, tcp_nodelay, crt, key, verify_peer, use_sni, verify_hostname }
+    }
+
+    fn clone_test(&mut self, test: &Test) {
+        self.commands.clear();
+        self.command_states.clear();
+        self.command_failed = false;
+
+        self.state = 0;
+        let mut i = self.state as i32;
+
+        // TODO: Use ref of states, do not clone
+        for (sid, state) in test.states.iter() {
+            let testend = state.testend.clone();
+            let cmd = state.cmd.clone();
+            let payload = state.payload.clone();
+            trace!(target: &self.name, "command: {}: {}, {}, {}", sid, testend, cmd, payload);
+
+            self.commands.insert(sid.clone(), TestState { testend, cmd, payload });
+            self.command_states.insert(i, sid.clone());
+            i += 1;
+        }
+
+        // TODO: Implement collect for BTreeMap<i32, i32>?
+        //self.command_states = self.commands.keys().cloned().collect();
+    }
+
     fn send_command(&self, testend: &TestEnd, msg: Msg) {
         match testend {
             TestEnd::Server => self.mgr2srv_tx.send(msg).unwrap(),
@@ -397,60 +477,43 @@ impl Manager {
         RecvMsgResult::None
     }
 
-    fn configure_proto(&self, testset: &TestSet) -> ProtoConfig {
-        let mut proto = Proto::Tcp;
-
-        let mut connect_timeout = 10;
-        if testset.proto.contains_key("connect_timeout") {
-            connect_timeout = testset.proto["connect_timeout"].parse().expect("Cannot parse connect_timeout");
-        }
-
-        let mut read_timeout = 10;
-        if testset.proto.contains_key("read_timeout") {
-            read_timeout = testset.proto["read_timeout"].parse().expect("Cannot parse read_timeout");
-        }
-
-        let mut write_timeout = 10;
-        if testset.proto.contains_key("write_timeout") {
-            write_timeout = testset.proto["write_timeout"].parse().expect("Cannot parse write_timeout");
-        }
-
-        let mut ip_ttl = 15;
-        if testset.proto.contains_key("ip_ttl") {
-            ip_ttl = testset.proto["ip_ttl"].parse().expect("Cannot parse ip_ttl");
-        }
-
-        let mut tcp_nodelay = true;
-        if testset.proto.contains_key("tcp_nodelay") && testset.proto["tcp_nodelay"].eq("no") {
-            tcp_nodelay = false;
-        }
-
-        let mut crt = "".to_string();
-        let mut key = "".to_string();
-        let mut verify_peer = false;
-        let mut use_sni = false;
-        let mut verify_hostname = false;
-
-        if testset.proto["proto"].eq("ssl") {
-            proto = Proto::Ssl;
-
-            if testset.proto.contains_key("crt") {
-                crt = testset.proto["crt"].clone();
-            }
-            if testset.proto.contains_key("key") {
-                key = testset.proto["key"].clone();
-            }
-            if testset.proto.contains_key("verify_peer") && testset.proto["verify_peer"].eq("yes") {
-                verify_peer = true;
-            }
-            if testset.proto.contains_key("use_sni") && testset.proto["use_sni"].eq("yes") {
-                use_sni = true;
-            }
-            if testset.proto.contains_key("verify_hostname") && testset.proto["verify_hostname"].eq("yes") {
-                verify_hostname = true;
+    fn run_test(&mut self) {
+        if let SendCommandResult::Success = self.send_next_command() {
+            let mut exit = false;
+            loop {
+                match self.recv_msg(TestEnd::Server) {
+                    RecvMsgResult::SendCommand => {
+                        if let SendCommandResult::TestFinished = self.send_next_command() {
+                            break;
+                        }
+                    }
+                    RecvMsgResult::Quit => {
+                        self.send_command(&TestEnd::Client, Msg::new(Command::Quit, "".to_string()));
+                        exit = true;
+                    }
+                    RecvMsgResult::None => {}
+                }
+                match self.recv_msg(TestEnd::Client) {
+                    RecvMsgResult::SendCommand => {
+                        if let SendCommandResult::TestFinished = self.send_next_command() {
+                            break;
+                        }
+                    }
+                    RecvMsgResult::Quit => {
+                        self.send_command(&TestEnd::Server, Msg::new(Command::Quit, "".to_string()));
+                        exit = true;
+                    }
+                    RecvMsgResult::None => {}
+                }
+                if exit {
+                    // TODO: Consume all messages in the channel and destroy the channel (?)
+                    // Consume any last messages in the channel, otherwise mgr thread cannot return
+                    self.recv_msg(TestEnd::Server);
+                    self.recv_msg(TestEnd::Client);
+                    break;
+                }
             }
         }
-        ProtoConfig { proto, connect_timeout, read_timeout, write_timeout, ip_ttl, tcp_nodelay, crt, key, verify_peer, use_sni, verify_hostname }
     }
 
     fn run(&mut self, testset: TestSet) {
@@ -473,72 +536,15 @@ impl Manager {
             let client_thread = thread::spawn(move || client.run());
             debug!(target: &self.name, "Spawned client for test {}", tid);
 
-            self.commands.clear();
-            self.command_states.clear();
-            self.command_failed = false;
+            self.clone_test(test);
 
-            self.state = 0;
-            let mut i = self.state as i32;
+            self.run_test();
 
-            // TODO: Use ref of states, do not clone
-            for (sid, state) in test.states.iter() {
-                let testend = state.testend.clone();
-                let cmd = state.cmd.clone();
-                let payload = state.payload.clone();
-                trace!(target: &self.name, "command: {}: {}, {}, {}", sid, testend, cmd, payload);
-
-                self.commands.insert(sid.clone(), TestState { testend, cmd, payload });
-                self.command_states.insert(i, sid.clone());
-                i += 1;
+            if let Ok(rv) = server_thread.join() {
+                self.command_failed |= rv;
             }
-
-            // TODO: Implement collect for BTreeMap<i32, i32>?
-            //self.command_states = self.commands.keys().cloned().collect();
-
-            if let SendCommandResult::Success = self.send_next_command() {
-                let mut exit = false;
-                loop {
-                    match self.recv_msg(TestEnd::Server) {
-                        RecvMsgResult::SendCommand => {
-                            if let SendCommandResult::TestFinished = self.send_next_command() {
-                                break;
-                            }
-                        }
-                        RecvMsgResult::Quit => {
-                            self.send_command(&TestEnd::Client, Msg::new(Command::Quit, "".to_string()));
-                            exit = true;
-                        }
-                        RecvMsgResult::None => {}
-                    }
-                    match self.recv_msg(TestEnd::Client) {
-                        RecvMsgResult::SendCommand => {
-                            if let SendCommandResult::TestFinished = self.send_next_command() {
-                                break;
-                            }
-                        }
-                        RecvMsgResult::Quit => {
-                            self.send_command(&TestEnd::Server, Msg::new(Command::Quit, "".to_string()));
-                            exit = true;
-                        }
-                        RecvMsgResult::None => {}
-                    }
-                    if exit {
-                        // TODO: Consume all messages in the channel and destroy the channel (?)
-                        // Consume any last messages in the channel, otherwise mgr thread cannot return
-                        self.recv_msg(TestEnd::Server);
-                        self.recv_msg(TestEnd::Client);
-                        break;
-                    }
-                }
-            }
-
-            match server_thread.join() {
-                Ok(rv) => { self.command_failed |= rv }
-                Err(_) => {}
-            }
-            match client_thread.join() {
-                Ok(rv) => { self.command_failed |= rv }
-                Err(_) => {}
+            if let Ok(rv) = client_thread.join() {
+                self.command_failed |= rv;
             }
 
             if self.command_failed {
@@ -575,15 +581,92 @@ impl Server {
         format!("SRV.h{}.s{}.t{}.{}", self.hid, self.sid, self.tid, stream_id)
     }
 
+    fn run_tcp(&mut self, tcp_stream: &TcpStream, failed: &mut bool) -> bool {
+        loop {
+            if let Err(RecvTimeoutError::Disconnected) = self.base.get_command() {
+                break false;
+            }
+            if let Err(e) = self.base.execute_tcp_command(&tcp_stream) {
+                if e == CmdExecResult::Fail {
+                    *failed = true;
+                } else if e == CmdExecResult::Timeout {
+                    break false;
+                }
+                break true;
+            }
+            // TODO: How to determine if TcpStream is closed? Currently we rely on CmdExecResult::Timeout error above
+        }
+    }
+
+    fn run_ssl(&mut self, tcp_stream: &TcpStream, failed: &mut bool) -> bool {
+        let mut exit = false;
+
+        let mut sab = SslAcceptor::mozilla_intermediate(SslMethod::tls()).unwrap();
+        if !self.base.proto.verify_peer {
+            // Otherwise use defaults
+            sab.set_verify(SslVerifyMode::NONE);
+        }
+        sab.set_certificate_file(&self.base.proto.crt, SslFiletype::PEM).unwrap();
+        sab.set_private_key_file(&self.base.proto.key, SslFiletype::PEM).unwrap();
+        let acceptor = sab.build();
+
+        let mut ssl_stream_trials = 0;
+        let ssl_stream_result: Result<SslStream<&TcpStream>, HandshakeError<&TcpStream>> = loop {
+            match acceptor.accept(tcp_stream) {
+                Ok(ssl_stream) => {
+                    debug!(target: &self.base.name, "SSL stream connected");
+                    break Ok(ssl_stream);
+                }
+                Err(e) => {
+                    ssl_stream_trials += 1;
+                    debug!(target: &self.base.name, "SSL stream HandshakeError ({}): {}", ssl_stream_trials, e);
+                    if ssl_stream_trials >= MAX_CONNECT_TRIALS {
+                        error!(target: &self.base.name, "Reached max ssl accept trials");
+                        *failed = true;
+                        break Err(e);
+                    }
+                    thread::sleep(CONN_TIMEOUT);
+                }
+            }
+        };
+
+        if let Ok(mut ssl_stream) = ssl_stream_result {
+            exit = loop {
+                if let Err(RecvTimeoutError::Disconnected) = self.base.get_command() {
+                    break false;
+                }
+                if let Err(e) = self.base.execute_ssl_command(&mut ssl_stream) {
+                    if e == CmdExecResult::Fail {
+                        *failed = true;
+                    } else if e == CmdExecResult::Timeout {
+                        break false;
+                    }
+                    break true;
+                }
+
+                let ss = ssl_stream.get_shutdown();
+                if ss == ShutdownState::RECEIVED || ss == ShutdownState::SENT {
+                    debug!(target: &self.base.name, "SSL stream shuts down");
+                    break false;
+                }
+            };
+            // Stream shutdown fixes the issue where the server was getting stuck
+            if let Err(_) = ssl_stream.shutdown() {
+                debug!(target: &self.base.name, "SSL shutdown failed");
+            }
+        }
+        exit
+    }
+
     fn run(&mut self) -> bool {
         let addr = format!("{}:{}", self.base.addr.ip, self.base.addr.port);
         let server = TcpListener::bind(addr.clone()).unwrap();
         debug!(target: &self.base.name, "TCP listener connected to {}", addr);
 
+        let mut stream_id = 1;
         let mut tcp_stream_trials = 0;
         let mut exit = false;
-        let mut stream_id = 1;
-        let mut retval = false;
+        let mut failed = false;
 
         // nonblocking is necessary to get the next stream (connection)
         server.set_nonblocking(true).unwrap();
@@ -602,77 +685,12 @@ impl Server {
 
                     self.base.configure_tcp_stream(&tcp_stream);
 
-                    if self.base.proto.proto == Proto::Ssl {
-                        let mut sab = SslAcceptor::mozilla_intermediate(SslMethod::tls()).unwrap();
-                        if !self.base.proto.verify_peer {
-                            // Otherwise use defaults
-                            sab.set_verify(SslVerifyMode::NONE);
-                        }
-                        sab.set_certificate_file(&self.base.proto.crt, SslFiletype::PEM).unwrap();
-                        sab.set_private_key_file(&self.base.proto.key, SslFiletype::PEM).unwrap();
-                        let acceptor = sab.build();
-
-                        let mut ssl_stream_trials = 0;
-                        let ssl_stream_result: Result<SslStream<&TcpStream>, HandshakeError<&TcpStream>> = loop {
-                            match acceptor.accept(&tcp_stream) {
-                                Ok(ssl_stream) => {
-                                    debug!(target: &self.base.name, "SSL stream connected");
-                                    break Ok(ssl_stream);
-                                }
-                                Err(e) => {
-                                    ssl_stream_trials += 1;
-                                    debug!(target: &self.base.name, "SSL stream HandshakeError ({}): {}", ssl_stream_trials, e);
-                                    if ssl_stream_trials >= MAX_CONNECT_TRIALS {
-                                        error!(target: &self.base.name, "Reached max ssl accept trials");
-                                        retval = true;
-                                        break Err(e);
-                                    }
-                                    thread::sleep(CONN_TIMEOUT);
-                                }
-                            }
-                        };
-
-                        if let Ok(mut ssl_stream) = ssl_stream_result {
-                            exit = loop {
-                                if let Err(RecvTimeoutError::Disconnected) = self.base.get_command() {
-                                    break false;
-                                }
-                                if let Err(e) = self.base.execute_ssl_command(&mut ssl_stream) {
-                                    if e == CmdExecResult::Fail {
-                                        retval = true;
-                                    } else if e == CmdExecResult::Timeout {
-                                        break false;
-                                    }
-                                    break true;
-                                }
-
-                                let ss = ssl_stream.get_shutdown();
-                                if ss == ShutdownState::RECEIVED || ss == ShutdownState::SENT {
-                                    debug!(target: &self.base.name, "SSL stream shuts down");
-                                    break false;
-                                }
-                            };
-                            // Stream shutdown fixes the issue where the server was getting stuck
-                            if let Err(_) = ssl_stream.shutdown() {
-                                debug!(target: &self.base.name, "SSL shutdown failed");
-                            }
-                        }
+                    if self.base.proto.proto == Proto::Tcp {
+                        exit = self.run_tcp(&tcp_stream, &mut failed);
                     } else {
-                        exit = loop {
-                            if let Err(RecvTimeoutError::Disconnected) = self.base.get_command() {
-                                break false;
-                            }
-                            if let Err(e) = self.base.execute_tcp_command(&tcp_stream) {
-                                if e == CmdExecResult::Fail {
-                                    retval = true;
-                                } else if e == CmdExecResult::Timeout {
-                                    break false;
-                                }
-                                break true;
-                            }
-                            // TODO: How to determine if TcpStream is closed? Currently we rely on CmdExecResult::Timeout error above
-                        };
+                        exit = self.run_ssl(&tcp_stream, &mut failed);
                     }
+
                     if let Err(_) = tcp_stream.shutdown(Shutdown::Both) {
                         debug!(target: &self.base.name, "TCP shutdown failed");
                     }
@@ -682,7 +700,7 @@ impl Server {
                     trace!(target: &self.base.name, "TCP stream error ({}): {}", tcp_stream_trials, e.to_string());
                     if tcp_stream_trials >= MAX_CONNECT_TRIALS {
                         error!(target: &self.base.name, "Reached max tcp stream trials");
-                        retval = true;
+                        failed = true;
                         break;
                     }
                     thread::sleep(CONN_TIMEOUT);
@@ -690,11 +708,11 @@ impl Server {
             }
         }
 
-        if retval {
+        if failed {
             self.base.tx.send(Msg::new(Command::Fail, "".to_string())).unwrap();
         }
-        debug!(target: &self.base.name, "Return {}", retval);
-        retval
+        debug!(target: &self.base.name, "Return {}", failed);
+        failed
     }
 }
 
@@ -709,13 +727,11 @@ impl Client {
         }
     }
 
-    fn run(&mut self) -> bool {
-        let mut retval = false;
-
+    fn connect_tcp_stream(&self, failed: &mut bool) -> Result<TcpStream, Error> {
         let addr = format!("{}:{}", self.base.addr.ip, self.base.addr.port).parse().unwrap();
 
         let mut tcp_stream_trials = 0;
-        let tcp_stream_result: Result<TcpStream, Error> = loop {
+        loop {
             match TcpStream::connect_timeout(&addr, Duration::from_secs(self.base.proto.connect_timeout)) {
                 Ok(tcp_stream) => {
                     debug!(target: &self.base.name, "TCP stream connected to {}", addr);
@@ -725,7 +741,59 @@ impl Client {
                     tcp_stream_trials += 1;
                     debug!(target: &self.base.name, "TCP stream error ({}): {}", tcp_stream_trials, e);
                     if tcp_stream_trials >= MAX_CONNECT_TRIALS {
-                        retval = true;
+                        *failed = true;
+                        break Err(e);
+                    }
+                    thread::sleep(CONN_TIMEOUT);
+                }
+            }
+        }
+    }
+
+    fn run_tcp(&mut self, tcp_stream: &TcpStream) -> bool {
+        loop {
+            if let Err(RecvTimeoutError::Disconnected) = self.base.get_command() {
+                break false;
+            }
+            if let Err(e) = self.base.execute_tcp_command(&tcp_stream) {
+                if e == CmdExecResult::Fail {
+                    break true;
+                }
+                break false;
+            }
+        }
+    }
+
+    fn run_ssl(&mut self, tcp_stream: &TcpStream) -> bool {
+        let mut failed = false;
+
+        let mut ssl_stream_trials = 0;
+        let ssl_stream_result: Result<SslStream<&TcpStream>, HandshakeError<&TcpStream>> = loop {
+            let mut scc = SslConnector::builder(SslMethod::tls()).expect("Cannot create SslConnector")
+                .build().configure().expect("Cannot create SSL ConnectConfiguration");
+            if !self.base.proto.verify_peer {
+                // Otherwise use defaults
+                scc.set_verify(SslVerifyMode::NONE);
+            }
+            if !self.base.proto.use_sni {
+                // Otherwise defaults to true
+                scc = scc.use_server_name_indication(false);
+            }
+            if !self.base.proto.verify_hostname {
+                // Otherwise defaults to true
+                scc = scc.verify_hostname(false);
+            }
+
+            match scc.connect("localhost", tcp_stream) {
+                Ok(ssl_stream) => {
+                    debug!(target: &self.base.name, "SSL stream connected");
+                    break Ok(ssl_stream);
+                }
+                Err(e) => {
+                    ssl_stream_trials += 1;
+                    debug!(target: &self.base.name, "SSL stream error ({}): {}", ssl_stream_trials, e);
+                    if ssl_stream_trials >= MAX_CONNECT_TRIALS {
+                        failed = true;
                         break Err(e);
                     }
                     thread::sleep(CONN_TIMEOUT);
@@ -733,88 +801,52 @@ impl Client {
             }
         };
 
-        if let Ok(tcp_stream) = tcp_stream_result {
+        if let Ok(mut ssl_stream) = ssl_stream_result {
+            loop {
+                if let Err(RecvTimeoutError::Disconnected) = self.base.get_command() {
+                    break;
+                }
+                if let Err(e) = self.base.execute_ssl_command(&mut ssl_stream) {
+                    if e == CmdExecResult::Fail {
+                        failed = true;
+                    }
+                    break;
+                }
+
+                let ss = ssl_stream.get_shutdown();
+                if ss == ShutdownState::RECEIVED || ss == ShutdownState::SENT {
+                    debug!(target: &self.base.name, "SSL stream shuts down");
+                    break;
+                }
+            }
+            if let Err(_) = ssl_stream.shutdown() {
+                debug!(target: &self.base.name, "SSL shutdown failed");
+            }
+        }
+        failed
+    }
+
+    fn run(&mut self) -> bool {
+        let mut failed = false;
+
+        if let Ok(tcp_stream) = self.connect_tcp_stream(&mut failed) {
             self.base.configure_tcp_stream(&tcp_stream);
 
-            if self.base.proto.proto == Proto::Ssl {
-                let mut ssl_stream_trials = 0;
-                let ssl_stream_result: Result<SslStream<&TcpStream>, HandshakeError<&TcpStream>> = loop {
-                    let mut scc = SslConnector::builder(SslMethod::tls()).expect("Cannot create SslConnector")
-                        .build().configure().expect("Cannot create SSL ConnectConfiguration");
-                    if !self.base.proto.verify_peer {
-                        // Otherwise use defaults
-                        scc.set_verify(SslVerifyMode::NONE);
-                    }
-                    if !self.base.proto.use_sni {
-                        // Otherwise defaults to true
-                        scc = scc.use_server_name_indication(false);
-                    }
-                    if !self.base.proto.verify_hostname {
-                        // Otherwise defaults to true
-                        scc = scc.verify_hostname(false);
-                    }
-
-                    match scc.connect("localhost", &tcp_stream) {
-                        Ok(ssl_stream) => {
-                            debug!(target: &self.base.name, "SSL stream connected");
-                            break Ok(ssl_stream);
-                        }
-                        Err(e) => {
-                            ssl_stream_trials += 1;
-                            debug!(target: &self.base.name, "SSL stream error ({}): {}", ssl_stream_trials, e);
-                            if ssl_stream_trials >= MAX_CONNECT_TRIALS {
-                                retval = true;
-                                break Err(e);
-                            }
-                            thread::sleep(CONN_TIMEOUT);
-                        }
-                    }
-                };
-
-                if let Ok(mut ssl_stream) = ssl_stream_result {
-                    loop {
-                        if let Err(RecvTimeoutError::Disconnected) = self.base.get_command() {
-                            break;
-                        }
-                        if let Err(e) = self.base.execute_ssl_command(&mut ssl_stream) {
-                            if e == CmdExecResult::Fail {
-                                retval = true;
-                            }
-                            break;
-                        }
-
-                        let ss = ssl_stream.get_shutdown();
-                        if ss == ShutdownState::RECEIVED || ss == ShutdownState::SENT {
-                            debug!(target: &self.base.name, "SSL stream shuts down");
-                            break;
-                        }
-                    }
-                    if let Err(_) = ssl_stream.shutdown() {
-                        debug!(target: &self.base.name, "SSL shutdown failed");
-                    }
-                }
+            if self.base.proto.proto == Proto::Tcp {
+                failed = self.run_tcp(&tcp_stream);
             } else {
-                loop {
-                    if let Err(RecvTimeoutError::Disconnected) = self.base.get_command() {
-                        break;
-                    }
-                    if let Err(e) = self.base.execute_tcp_command(&tcp_stream) {
-                        if e == CmdExecResult::Fail {
-                            retval = true;
-                        }
-                        break;
-                    }
-                }
+                failed = self.run_ssl(&tcp_stream);
             }
             if let Err(_) = tcp_stream.shutdown(Shutdown::Both) {
                 debug!(target: &self.base.name, "TCP shutdown failed");
             }
         }
-        if retval {
+
+        if failed {
             self.base.tx.send(Msg::new(Command::Fail, "".to_string())).unwrap();
         }
-        debug!(target: &self.base.name, "Return {}", retval);
-        retval
+        debug!(target: &self.base.name, "Return {}", failed);
+        failed
     }
 }
 
@@ -1029,15 +1061,6 @@ impl TestEndBase {
                         }
                     }
                     // TODO: Handle WouldBlock and other errors separately?
-                    //Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
-                    //    warn!(target: &self.name, "TCP stream WouldBlock error: {}", e.to_string());
-                    //    self.recv_trials += 1;
-                    //    if self.recv_trials >= MAX_RECV_TRIALS {
-                    //        self.tx.send(Msg::new(Command::Recv, self.recv_payload.clone())).unwrap();
-                    //        self.reset_command();
-                    //        return Err(CmdExecResult::Fail);
-                    //    }
-                    //}
                     Err(e) => {
                         error!(target: &self.name, "TCP stream read error: {}", e.to_string());
                         self.tx.send(Msg::new(Command::Recv, self.recv_payload.clone())).unwrap();
