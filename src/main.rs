@@ -449,25 +449,31 @@ impl Manager {
                         debug!(target: &self.name, "Payloads match for {} {}", testend, msg.cmd);
                     } else {
                         self.command_failed = true;
-                        error!(target: &self.name, "Payloads do NOT match for {} {}, payload({})= {}, sender_payload({})= {}",
+                        error!(target: &self.name, "Payloads do NOT match for {} {}, expected payload({})= {}, received payload({})= {}",
                                testend, msg.cmd, self.payload.len(), self.payload, msg.payload.len(), msg.payload);
                     }
                 } else {
                     self.command_failed = true;
-                    debug!(target: &self.name, "Commands do NOT match for {}, cmd= {}, sender_cmd= {}",
+                    debug!(target: &self.name, "Commands do NOT match for {}, expected cmd= {}, received cmd= {}",
                            testend, self.cmd, msg.cmd);
                 }
 
-                // TODO: Fix this if-else code
-                if msg.cmd.eq(&Command::Quit) {
-                    return RecvMsgResult::Quit;
-                } else if msg.cmd.eq(&Command::Fail) {
-                    self.command_failed = true;
-                    return RecvMsgResult::Quit;
-                } else if !self.command_failed {
-                    return RecvMsgResult::SendCommand;
-                } else {
-                    return RecvMsgResult::Quit;
+                // TODO: Improve this match/if-else code?
+                match msg.cmd {
+                    Command::Quit => {
+                        return RecvMsgResult::Quit;
+                    }
+                    Command::Fail => {
+                        self.command_failed = true;
+                        return RecvMsgResult::Quit;
+                    }
+                    _ => {
+                        if !self.command_failed {
+                            return RecvMsgResult::SendCommand;
+                        } else {
+                            return RecvMsgResult::Quit;
+                        }
+                    }
                 }
             }
             Err(e) => {
@@ -913,26 +919,29 @@ impl TestEndBase {
     }
 
     fn process_recv_payload(&mut self) -> Result<(), ProcessRecvPayloadError> {
-        let mut rv = Ok(());
         self.recv_trials += 1;
         if self.recv_payload.len() < self.payload.len() &&
             (self.payload.starts_with(&self.recv_payload) || self.recv_payload.is_empty()) &&
             self.recv_trials < MAX_RECV_TRIALS {
             trace!(target: &self.name, "Received partial payload ({}): {}", self.recv_payload.len(), self.recv_payload);
-            return rv;
-        } else if !self.payload.eq(&self.recv_payload) {
+            return Ok(());
+        }
+
+        let mut rv = Ok(());
+
+        if !self.payload.eq(&self.recv_payload) {
             if self.proto.proto == Proto::Tcp && self.recv_payload.is_empty() {
                 // ATTENTION: Timeout is the only way we can determine TCP disconnect, otherwise SSL disconnect detection is fine
                 debug!(target: &self.name, "TCP stream timed out (assume disconnected) for {}, payload({})= {}, recv_payload({})= {}",
                        self.cmd, self.payload.len(), self.payload, self.recv_payload.len(), self.recv_payload);
-                rv = Err(ProcessRecvPayloadError::Timeout);
-                return rv;
-            } else {
-                debug!(target: &self.name, "Payloads do NOT match for {}, payload({})= {}, recv_payload({})= {}",
-                       self.cmd, self.payload.len(), self.payload, self.recv_payload.len(), self.recv_payload);
-                rv = Err(ProcessRecvPayloadError::Fail);
+                return Err(ProcessRecvPayloadError::Timeout);
             }
+
+            debug!(target: &self.name, "Payloads do NOT match for {}, payload({})= {}, recv_payload({})= {}",
+                   self.cmd, self.payload.len(), self.payload, self.recv_payload.len(), self.recv_payload);
+            rv = Err(ProcessRecvPayloadError::Fail);
         }
+
         self.tx.send(Msg::new(Command::Recv, self.recv_payload.clone())).unwrap();
         self.reset_command();
         rv
