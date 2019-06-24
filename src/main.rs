@@ -62,6 +62,7 @@ const MAX_CMD_TRIALS: i32 = 100;
 
 // MAX_CONNECT_TRIALS * CONN_TIMEOUT == 1 sec
 const MAX_CONNECT_TRIALS: i32 = 100;
+const MAX_CONNECT_TIMEOUT_TRIALS: i32 = 100;
 const CONN_TIMEOUT: Duration = Duration::from_millis(10);
 
 // For TCP disconnect detection
@@ -170,6 +171,7 @@ impl<'de> Deserialize<'de> for TestEnd {
 enum Command {
     Send,
     Recv,
+    Timeout,
     Quit,
     Fail,
     None,
@@ -180,6 +182,7 @@ impl Display for Command {
         match self {
             Command::Send => write!(fmt, "send"),
             Command::Recv => write!(fmt, "recv"),
+            Command::Timeout => write!(fmt, "timeout"),
             Command::Quit => write!(fmt, "quit"),
             Command::Fail => write!(fmt, "fail"),
             Command::None => write!(fmt, "none"),
@@ -196,6 +199,7 @@ impl<'de> Deserialize<'de> for Command {
         match s.as_str() {
             "send" => Ok(Command::Send),
             "recv" => Ok(Command::Recv),
+            "timeout" => Ok(Command::Timeout),
             cmd => {
                 error!("Command not supported: {}", cmd);
                 panic!("Command not supported")
@@ -639,17 +643,20 @@ impl Server {
     fn run_tcp(&mut self, tcp_stream: &TcpStream, failed: &mut bool) -> bool {
         self.base.cmd_trials = 0;
         loop {
-            self.base.cmd_trials += 1;
             if let Err(RecvTimeoutError::Disconnected) = self.base.get_command() {
                 break false;
             }
-            if self.base.cmd_trials > MAX_CMD_TRIALS {
-                debug!(target: &self.base.name, "TCP stream loop timed out");
-                // TODO: Disabling all self.base.cmd == Command::Recv if conditions gets the program stuck somewhere with log level 3, fix it (still true?)
-                if self.base.cmd == Command::Recv {
-                    if let Err(_) = self.base.report_recv_payload() { break true; }
+
+            if self.base.cmd == Command::None {
+                self.base.cmd_trials += 1;
+                if self.base.cmd_trials > MAX_CMD_TRIALS {
+                    debug!(target: &self.base.name, "TCP stream loop timed out");
+                    // TODO: Disabling all self.base.cmd == Command::Recv if conditions gets the program stuck somewhere with log level 3, fix it (still true?)
+                    if self.base.cmd == Command::Recv {
+                        if let Err(_) = self.base.report_recv_payload() { break true; }
+                    }
+                    break false;
                 }
-                break false;
             }
 
             if let Err(e) = self.base.execute_tcp_command(&tcp_stream) {
@@ -699,16 +706,19 @@ impl Server {
         if let Ok(mut ssl_stream) = ssl_stream_result {
             self.base.cmd_trials = 0;
             exit = loop {
-                self.base.cmd_trials += 1;
                 if let Err(RecvTimeoutError::Disconnected) = self.base.get_command() {
                     break false;
                 }
-                if self.base.cmd_trials > MAX_CMD_TRIALS {
-                    debug!(target: &self.base.name, "SSL stream loop timed out");
-                    if self.base.cmd == Command::Recv {
-                        if let Err(_) = self.base.report_recv_payload() { break true; }
+
+                if self.base.cmd == Command::None {
+                    self.base.cmd_trials += 1;
+                    if self.base.cmd_trials > MAX_CMD_TRIALS {
+                        debug!(target: &self.base.name, "SSL stream loop timed out");
+                        if self.base.cmd == Command::Recv {
+                            if let Err(_) = self.base.report_recv_payload() { break true; }
+                        }
+                        break false;
                     }
-                    break false;
                 }
 
                 if let Err(e) = self.base.execute_ssl_command(&mut ssl_stream) {
@@ -750,6 +760,7 @@ impl Server {
         // nonblocking is necessary to get the next stream (connection)
         server.set_nonblocking(true).unwrap();
 
+        self.base.cmd_trials = 0;
         for server_result in server.incoming() {
             if exit {
                 break;
@@ -762,6 +773,14 @@ impl Server {
                     stream_id += 1;
 
                     debug!(target: &self.base.name, "TCP stream connected");
+
+                    if self.base.cmd == Command::Timeout {
+                        debug!(target: &self.base.name, "Timeout command failed");
+                        self.base.reset_command();
+                        failed = true;
+                        break;
+                    }
+
                     self.base.configure_tcp_stream(&tcp_stream);
 
                     if self.base.proto.proto == Proto::Tcp {
@@ -777,12 +796,37 @@ impl Server {
                 Err(e) => {
                     tcp_stream_trials += 1;
                     trace!(target: &self.base.name, "TCP stream error ({}): {}", tcp_stream_trials, e.to_string());
-                    if tcp_stream_trials >= MAX_CONNECT_TRIALS {
+                    if self.base.cmd == Command::Timeout {
+                        if tcp_stream_trials >= MAX_CONNECT_TIMEOUT_TRIALS {
+                            debug!(target: &self.base.name, "Timeout command succeeded");
+                            self.base.tx.send(Msg::new(Command::Timeout, "".to_string())).unwrap();
+                            self.base.reset_command();
+                            tcp_stream_trials = 0;
+                        }
+                    } else if tcp_stream_trials >= MAX_CONNECT_TRIALS {
                         error!(target: &self.base.name, "Reached max tcp stream trials");
                         failed = true;
                         break;
                     }
                     thread::sleep(CONN_TIMEOUT);
+                }
+            }
+
+            if let Err(RecvTimeoutError::Disconnected) = self.base.get_command() {
+                break;
+            }
+            if self.base.cmd == Command::Quit {
+                debug!(target: &self.base.name, "Received quit command");
+                self.base.reset_command();
+                break;
+            }
+
+            // Do not timeout, if we are executing a command already
+            if self.base.cmd == Command::None {
+                self.base.cmd_trials += 1;
+                if self.base.cmd_trials > MAX_CMD_TRIALS {
+                    debug!(target: &self.base.name, "Server loop timed out");
+                    break;
                 }
             }
         }
@@ -832,16 +876,19 @@ impl Client {
     fn run_tcp(&mut self, tcp_stream: &TcpStream) -> bool {
         self.base.cmd_trials = 0;
         loop {
-            self.base.cmd_trials += 1;
             if let Err(RecvTimeoutError::Disconnected) = self.base.get_command() {
                 break false;
             }
-            if self.base.cmd_trials > MAX_CMD_TRIALS {
-                debug!(target: &self.base.name, "TCP stream loop timed out");
-                if self.base.cmd == Command::Recv {
-                    if let Err(_) = self.base.report_recv_payload() { break true; }
+
+            if self.base.cmd == Command::None {
+                self.base.cmd_trials += 1;
+                if self.base.cmd_trials > MAX_CMD_TRIALS {
+                    debug!(target: &self.base.name, "TCP stream loop timed out");
+                    if self.base.cmd == Command::Recv {
+                        if let Err(_) = self.base.report_recv_payload() { break true; }
+                    }
+                    break false;
                 }
-                break false;
             }
 
             if let Err(e) = self.base.execute_tcp_command(&tcp_stream) {
@@ -893,16 +940,19 @@ impl Client {
         if let Ok(mut ssl_stream) = ssl_stream_result {
             self.base.cmd_trials = 0;
             loop {
-                self.base.cmd_trials += 1;
                 if let Err(RecvTimeoutError::Disconnected) = self.base.get_command() {
                     break;
                 }
-                if self.base.cmd_trials > MAX_CMD_TRIALS {
-                    debug!(target: &self.base.name, "SSL stream loop timed out");
-                    if self.base.cmd == Command::Recv {
-                        if let Err(_) = self.base.report_recv_payload() { failed = true; }
+
+                if self.base.cmd == Command::None {
+                    self.base.cmd_trials += 1;
+                    if self.base.cmd_trials > MAX_CMD_TRIALS {
+                        debug!(target: &self.base.name, "SSL stream loop timed out");
+                        if self.base.cmd == Command::Recv {
+                            if let Err(_) = self.base.report_recv_payload() { failed = true; }
+                        }
+                        break;
                     }
-                    break;
                 }
 
                 if let Err(e) = self.base.execute_ssl_command(&mut ssl_stream) {
@@ -1096,6 +1146,10 @@ impl TestEndBase {
                     return Err(CmdExecResult::Fail);
                 }
             }
+            Command::Timeout => {
+                debug!(target: &self.name, "Received Timeout command while connected");
+                return Err(CmdExecResult::Disconnect);
+            }
             Command::Quit => {
                 self.reset_command();
                 return Err(CmdExecResult::Quit);
@@ -1171,6 +1225,10 @@ impl TestEndBase {
                 if let Err(_) = self.process_recv_payload() {
                     return Err(CmdExecResult::Fail);
                 }
+            }
+            Command::Timeout => {
+                debug!(target: &self.name, "Received Timeout command while connected");
+                return Err(CmdExecResult::Disconnect);
             }
             Command::Quit => {
                 self.reset_command();

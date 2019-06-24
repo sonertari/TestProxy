@@ -50,6 +50,12 @@
           "testend": "client",
           "cmd": "recv",
           "payload": "HTTP/1.1 302 Found\r\nLocation: sslproxy\r\n\r\n"
+        },
+        "6": {
+          "testend": "server",
+          "cmd": "timeout",
+          "payload": "",
+          "comment": "Just a sample timeout command"
         }
       }
     },
