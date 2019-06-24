@@ -22,6 +22,7 @@ extern crate log;
 extern crate openssl;
 extern crate serde;
 extern crate structopt;
+extern crate time;
 
 use std::collections::BTreeMap;
 use std::fmt::{self, Display, Formatter};
@@ -37,7 +38,7 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
-use openssl::ssl::{ErrorCode, HandshakeError, ShutdownState, SslAcceptor, SslConnector, SslFiletype, SslMethod, SslStream, SslVerifyMode};
+use openssl::ssl::{HandshakeError, ShutdownState, SslAcceptor, SslConnector, SslFiletype, SslMethod, SslStream, SslVerifyMode};
 use serde::{Deserialize, Deserializer};
 use structopt::StructOpt;
 
@@ -48,12 +49,25 @@ mod logging;
 
 const CHANNEL_TIMEOUT: Duration = Duration::from_millis(10);
 
+// Default TCP timeouts in millis
+const CONNECT_TIMEOUT: u64 = 1000;
+// Very short read/write timeouts may break SSL handshake, use values > 10
+const READ_TIMEOUT: u64 = 100;
+const WRITE_TIMEOUT: u64 = 100;
+
+const MAX_TEST_TRIALS: i32 = 100;
+
+// Command exec loops time out after MAX_CMD_TRIALS * read_timeout millis (we loop receiving only)
+const MAX_CMD_TRIALS: i32 = 100;
+
 // MAX_CONNECT_TRIALS * CONN_TIMEOUT == 1 sec
 const MAX_CONNECT_TRIALS: i32 = 100;
 const CONN_TIMEOUT: Duration = Duration::from_millis(10);
 
-// MAX_RECV_TRIALS * BUF_SIZE == 65536 (max payload size in bytes)
-const MAX_RECV_TRIALS: i32 = 64;
+// For TCP disconnect detection
+const MAX_RECV_DISCONNECT_DETECT: i32 = 5;
+
+const MAX_RECV_TRIALS: i32 = 5;
 const BUF_SIZE: usize = 1024;
 
 #[derive(Deserialize, Debug)]
@@ -217,13 +231,7 @@ impl Msg {
 enum CmdExecResult {
     Quit,
     Fail,
-    Timeout,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ProcessRecvPayloadError {
-    Fail,
-    Timeout,
+    Disconnect,
 }
 
 fn main() {
@@ -270,9 +278,9 @@ struct Manager {
     testend: TestEnd,
     cmd: Command,
     payload: String,
-    commands: BTreeMap<i32, TestState>,
-    command_states: BTreeMap<i32, i32>,
-    command_failed: bool,
+    teststates: BTreeMap<i32, TestState>,
+    teststate_ids: BTreeMap<i32, i32>,
+    test_failed: bool,
     mgr2cli_tx: Sender<Msg>,
     mgr2cli_rx: Arc<Mutex<Receiver<Msg>>>,
     cli2mgr_tx: Sender<Msg>,
@@ -291,11 +299,13 @@ impl Manager {
         // ATTENTION: Init these channels in this new() method, and use Arc/Mutex
         // Otherwise, Server/Manager threads do not return, hence join() call gets stuck sometimes
         // TODO: Check why Server/Manager threads do not join() if these channels are init in run() and without Arc/Mutex
-        let (mgr2srv_tx, mgr2srv_rx) = mpsc::channel();
-        let (mgr2cli_tx, mgr2cli_rx) = mpsc::channel();
         // Use Arc/Mutex to pass receivers to server and client threads
-        let mgr2srv_rx = Arc::new(Mutex::new(mgr2srv_rx));
+        // We create these channels here for initialization purposes only
+        let (mgr2cli_tx, mgr2cli_rx) = mpsc::channel();
         let mgr2cli_rx = Arc::new(Mutex::new(mgr2cli_rx));
+
+        let (mgr2srv_tx, mgr2srv_rx) = mpsc::channel();
+        let mgr2srv_rx = Arc::new(Mutex::new(mgr2srv_rx));
 
         Manager {
             hid,
@@ -305,9 +315,9 @@ impl Manager {
             testend: TestEnd::None,
             cmd: Command::None,
             payload: "".to_string(),
-            commands: BTreeMap::new(),
-            command_states: BTreeMap::new(),
-            command_failed: false,
+            teststates: BTreeMap::new(),
+            teststate_ids: BTreeMap::new(),
+            test_failed: false,
             mgr2cli_tx,
             mgr2cli_rx,
             cli2mgr_tx,
@@ -322,17 +332,17 @@ impl Manager {
     fn configure_proto(&self, testset: &TestSet) -> ProtoConfig {
         let mut proto = Proto::Tcp;
 
-        let mut connect_timeout = 10;
+        let mut connect_timeout = CONNECT_TIMEOUT;
         if testset.proto.contains_key("connect_timeout") {
             connect_timeout = testset.proto["connect_timeout"].parse().expect("Cannot parse connect_timeout");
         }
 
-        let mut read_timeout = 10;
+        let mut read_timeout = READ_TIMEOUT;
         if testset.proto.contains_key("read_timeout") {
             read_timeout = testset.proto["read_timeout"].parse().expect("Cannot parse read_timeout");
         }
 
-        let mut write_timeout = 10;
+        let mut write_timeout = WRITE_TIMEOUT;
         if testset.proto.contains_key("write_timeout") {
             write_timeout = testset.proto["write_timeout"].parse().expect("Cannot parse write_timeout");
         }
@@ -376,27 +386,25 @@ impl Manager {
     }
 
     fn clone_test(&mut self, test: &Test) {
-        self.commands.clear();
-        self.command_states.clear();
-        self.command_failed = false;
+        self.teststates.clear();
+        self.teststate_ids.clear();
+        self.test_failed = false;
 
         self.state = 0;
         let mut i = self.state as i32;
 
-        // TODO: Use ref of states, do not clone
+        // TODO: Use ref of states, do not clone?
         for (sid, state) in test.states.iter() {
             let testend = state.testend.clone();
             let cmd = state.cmd.clone();
             let payload = state.payload.clone();
-            trace!(target: &self.name, "command: {}: {}, {}, {}", sid, testend, cmd, payload);
 
-            self.commands.insert(sid.clone(), TestState { testend, cmd, payload });
-            self.command_states.insert(i, sid.clone());
+            trace!(target: &self.name, "teststate: {}: {}, {}, {}", sid, testend, cmd, payload);
+
+            self.teststates.insert(sid.clone(), TestState { testend, cmd, payload });
+            self.teststate_ids.insert(i, sid.clone());
             i += 1;
         }
-
-        // TODO: Implement collect for BTreeMap<i32, i32>?
-        //self.command_states = self.commands.keys().cloned().collect();
     }
 
     fn send_command(&self, testend: &TestEnd, msg: Msg) {
@@ -404,21 +412,22 @@ impl Manager {
             TestEnd::Server => self.mgr2srv_tx.send(msg).unwrap(),
             TestEnd::Client => self.mgr2cli_tx.send(msg).unwrap(),
             TestEnd::None => {
-                error!("Testend not supported: {}", testend);
+                error!(target: &self.name, "Testend not supported: {}", testend);
                 panic!("Testend not supported")
             }
         }
     }
 
     fn send_next_command(&mut self) -> SendCommandResult {
-        if self.state < self.command_states.len() {
-            let state = &self.command_states[&(self.state as i32)];
-            trace!(target: &self.name, "State: {}, command state: {}", self.state, state);
+        if self.state < self.teststate_ids.len() {
+            let state = &self.teststate_ids[&(self.state as i32)];
+            debug!(target: &self.name, "State: {}, test state: {}", self.state, state);
 
-            self.testend = self.commands[state].testend.clone();
-            self.cmd = self.commands[state].cmd.clone();
-            self.payload = self.commands[state].payload.clone();
+            self.testend = self.teststates[state].testend.clone();
+            self.cmd = self.teststates[state].cmd.clone();
+            self.payload = self.teststates[state].payload.clone();
 
+            trace!(target: &self.name, "Sending msg: {}, {}, {}", &self.testend, &self.cmd, &self.payload);
             self.send_command(&self.testend, Msg::new(self.cmd.clone(), self.payload.clone()));
             self.state += 1;
         } else {
@@ -435,7 +444,7 @@ impl Manager {
             TestEnd::Server => rx = &self.srv2mgr_rx,
             TestEnd::Client => rx = &self.cli2mgr_rx,
             TestEnd::None => {
-                error!("Testend not supported: {}", testend);
+                error!(target: &self.name, "Testend not supported: {}", testend);
                 panic!("Testend not supported")
             }
         }
@@ -444,18 +453,24 @@ impl Manager {
         match result {
             Ok(msg) => {
                 debug!(target: &self.name, "Msg from {} ({}): ({}, {})", testend, msg.payload.len(), msg.cmd, msg.payload);
-                if self.cmd.eq(&msg.cmd) {
-                    if self.payload.eq(&msg.payload) {
-                        debug!(target: &self.name, "Payloads match for {} {}", testend, msg.cmd);
+                let mut test_succeeded = false;
+                if self.testend.eq(&testend) {
+                    if self.cmd.eq(&msg.cmd) {
+                        if self.payload.eq(&msg.payload) {
+                            debug!(target: &self.name, "Payloads match for {} {}", testend, msg.cmd);
+                            test_succeeded = true;
+                        } else {
+                            self.test_failed = true;
+                            error!(target: &self.name, "Payloads do NOT match for {} {}, expected payload({})= {}, received payload({})= {}",
+                                   testend, msg.cmd, self.payload.len(), self.payload, msg.payload.len(), msg.payload);
+                        }
                     } else {
-                        self.command_failed = true;
-                        error!(target: &self.name, "Payloads do NOT match for {} {}, expected payload({})= {}, received payload({})= {}",
-                               testend, msg.cmd, self.payload.len(), self.payload, msg.payload.len(), msg.payload);
+                        debug!(target: &self.name, "Commands do NOT match for {}, expected cmd= {}, received cmd= {}, expected payload({})= {}, received payload({})= {}",
+                               testend, self.cmd, msg.cmd, self.payload.len(), self.payload, msg.payload.len(), msg.payload);
                     }
                 } else {
-                    self.command_failed = true;
-                    debug!(target: &self.name, "Commands do NOT match for {}, expected cmd= {}, received cmd= {}",
-                           testend, self.cmd, msg.cmd);
+                    debug!(target: &self.name, "Testends do NOT match, expected testend= {}, received testend= {}, expected cmd= {}, received cmd= {}, expected payload({})= {}, received payload({})= {}",
+                           testend, self.testend, self.cmd, msg.cmd, self.payload.len(), self.payload, msg.payload.len(), msg.payload);
                 }
 
                 // TODO: Improve this match/if-else code?
@@ -464,15 +479,16 @@ impl Manager {
                         return RecvMsgResult::Quit;
                     }
                     Command::Fail => {
-                        self.command_failed = true;
+                        self.test_failed = true;
                         return RecvMsgResult::Quit;
                     }
                     _ => {
-                        if !self.command_failed {
-                            return RecvMsgResult::SendCommand;
-                        } else {
-                            return RecvMsgResult::Quit;
+                        if !self.test_failed {
+                            if test_succeeded {
+                                return RecvMsgResult::SendCommand;
+                            }
                         }
+                        return RecvMsgResult::Quit;
                     }
                 }
             }
@@ -485,13 +501,17 @@ impl Manager {
 
     fn run_test(&mut self) {
         if let SendCommandResult::Success = self.send_next_command() {
+            let mut test_trials = 0;
             let mut exit = false;
             loop {
+                test_trials += 1;
+
                 match self.recv_msg(TestEnd::Server) {
                     RecvMsgResult::SendCommand => {
                         if let SendCommandResult::TestFinished = self.send_next_command() {
                             break;
                         }
+                        test_trials = 0;
                     }
                     RecvMsgResult::Quit => {
                         self.send_command(&TestEnd::Client, Msg::new(Command::Quit, "".to_string()));
@@ -504,6 +524,7 @@ impl Manager {
                         if let SendCommandResult::TestFinished = self.send_next_command() {
                             break;
                         }
+                        test_trials = 0;
                     }
                     RecvMsgResult::Quit => {
                         self.send_command(&TestEnd::Server, Msg::new(Command::Quit, "".to_string()));
@@ -511,6 +532,14 @@ impl Manager {
                     }
                     RecvMsgResult::None => {}
                 }
+
+                if test_trials > MAX_TEST_TRIALS {
+                    debug!(target: &self.name, "Test loop timed out");
+                    exit = true;
+                } else {
+                    trace!(target: &self.name, "Test loop trial {}", test_trials);
+                }
+
                 if exit {
                     // TODO: Consume all messages in the channel and destroy the channel (?)
                     // Consume any last messages in the channel, otherwise mgr thread cannot return
@@ -527,6 +556,26 @@ impl Manager {
 
         for (&tid, test) in testset.tests.iter() {
             debug!(target: &self.name, "{}", test.comment);
+
+            let (cli2mgr_tx, cli2mgr_rx) = mpsc::channel();
+            self.cli2mgr_tx = cli2mgr_tx;
+            self.cli2mgr_rx = cli2mgr_rx;
+            trace!(target: &self.name, "Created new cli2mgr channel");
+
+            let (srv2mgr_tx, srv2mgr_rx) = mpsc::channel();
+            self.srv2mgr_tx = srv2mgr_tx;
+            self.srv2mgr_rx = srv2mgr_rx;
+            trace!(target: &self.name, "Created new srv2mgr channel");
+
+            let (mgr2cli_tx, mgr2cli_rx) = mpsc::channel();
+            self.mgr2cli_tx = mgr2cli_tx;
+            self.mgr2cli_rx = Arc::new(Mutex::new(mgr2cli_rx));
+            trace!(target: &self.name, "Created new mgr2cli channel");
+
+            let (mgr2srv_tx, mgr2srv_rx) = mpsc::channel();
+            self.mgr2srv_tx = mgr2srv_tx;
+            self.mgr2srv_rx = Arc::new(Mutex::new(mgr2srv_rx));
+            trace!(target: &self.name, "Created new mgr2srv channel");
 
             let proto = self.configure_proto(&testset);
 
@@ -547,17 +596,17 @@ impl Manager {
             self.run_test();
 
             if let Ok(rv) = server_thread.join() {
-                self.command_failed |= rv;
+                self.test_failed |= rv;
             }
             if let Ok(rv) = client_thread.join() {
-                self.command_failed |= rv;
+                self.test_failed |= rv;
             }
 
-            if self.command_failed {
+            if !self.test_failed && self.state == self.teststate_ids.len() {
+                info!(target: &self.name, "Test {} succeeded: {}", tid, test.comment);
+            } else {
                 error!(target: &self.name, "Test {} failed: {}", tid, test.comment);
                 break;
-            } else {
-                info!(target: &self.name, "Test {} succeeded: {}", tid, test.comment);
             }
         }
         debug!(target: &self.name, "Exit");
@@ -588,19 +637,30 @@ impl Server {
     }
 
     fn run_tcp(&mut self, tcp_stream: &TcpStream, failed: &mut bool) -> bool {
+        self.base.cmd_trials = 0;
         loop {
+            self.base.cmd_trials += 1;
             if let Err(RecvTimeoutError::Disconnected) = self.base.get_command() {
                 break false;
             }
+            if self.base.cmd_trials > MAX_CMD_TRIALS {
+                debug!(target: &self.base.name, "TCP stream loop timed out");
+                // TODO: Disabling all self.base.cmd == Command::Recv if conditions gets the program stuck somewhere with log level 3, fix it (still true?)
+                if self.base.cmd == Command::Recv {
+                    if let Err(_) = self.base.report_recv_payload() { break true; }
+                }
+                break false;
+            }
+
             if let Err(e) = self.base.execute_tcp_command(&tcp_stream) {
                 if e == CmdExecResult::Fail {
                     *failed = true;
-                } else if e == CmdExecResult::Timeout {
+                } else if e == CmdExecResult::Disconnect {
                     break false;
                 }
                 break true;
             }
-            // TODO: How to determine if TcpStream is closed? Currently we rely on CmdExecResult::Timeout error above
+            // TODO: How to determine if TcpStream is closed? Currently, we rely on Ok Result of empty read()
         }
     }
 
@@ -637,14 +697,24 @@ impl Server {
         };
 
         if let Ok(mut ssl_stream) = ssl_stream_result {
+            self.base.cmd_trials = 0;
             exit = loop {
+                self.base.cmd_trials += 1;
                 if let Err(RecvTimeoutError::Disconnected) = self.base.get_command() {
                     break false;
                 }
+                if self.base.cmd_trials > MAX_CMD_TRIALS {
+                    debug!(target: &self.base.name, "SSL stream loop timed out");
+                    if self.base.cmd == Command::Recv {
+                        if let Err(_) = self.base.report_recv_payload() { break true; }
+                    }
+                    break false;
+                }
+
                 if let Err(e) = self.base.execute_ssl_command(&mut ssl_stream) {
                     if e == CmdExecResult::Fail {
                         *failed = true;
-                    } else if e == CmdExecResult::Timeout {
+                    } else if e == CmdExecResult::Disconnect {
                         break false;
                     }
                     break true;
@@ -653,6 +723,9 @@ impl Server {
                 let ss = ssl_stream.get_shutdown();
                 if ss == ShutdownState::RECEIVED || ss == ShutdownState::SENT {
                     debug!(target: &self.base.name, "SSL stream shuts down");
+                    if self.base.cmd == Command::Recv {
+                        if let Err(_) = self.base.report_recv_payload() { break true; }
+                    }
                     break false;
                 }
             };
@@ -685,10 +758,10 @@ impl Server {
                 Ok(tcp_stream) => {
                     // Reset the trial count of the outer-most loop on success
                     tcp_stream_trials = 0;
-
                     self.base.name = self.name(stream_id);
                     stream_id += 1;
 
+                    debug!(target: &self.base.name, "TCP stream connected");
                     self.base.configure_tcp_stream(&tcp_stream);
 
                     if self.base.proto.proto == Proto::Tcp {
@@ -738,7 +811,7 @@ impl Client {
 
         let mut tcp_stream_trials = 0;
         loop {
-            match TcpStream::connect_timeout(&addr, Duration::from_secs(self.base.proto.connect_timeout)) {
+            match TcpStream::connect_timeout(&addr, Duration::from_millis(self.base.proto.connect_timeout)) {
                 Ok(tcp_stream) => {
                     debug!(target: &self.base.name, "TCP stream connected to {}", addr);
                     break Ok(tcp_stream);
@@ -757,10 +830,20 @@ impl Client {
     }
 
     fn run_tcp(&mut self, tcp_stream: &TcpStream) -> bool {
+        self.base.cmd_trials = 0;
         loop {
+            self.base.cmd_trials += 1;
             if let Err(RecvTimeoutError::Disconnected) = self.base.get_command() {
                 break false;
             }
+            if self.base.cmd_trials > MAX_CMD_TRIALS {
+                debug!(target: &self.base.name, "TCP stream loop timed out");
+                if self.base.cmd == Command::Recv {
+                    if let Err(_) = self.base.report_recv_payload() { break true; }
+                }
+                break false;
+            }
+
             if let Err(e) = self.base.execute_tcp_command(&tcp_stream) {
                 if e == CmdExecResult::Fail {
                     break true;
@@ -808,10 +891,20 @@ impl Client {
         };
 
         if let Ok(mut ssl_stream) = ssl_stream_result {
+            self.base.cmd_trials = 0;
             loop {
+                self.base.cmd_trials += 1;
                 if let Err(RecvTimeoutError::Disconnected) = self.base.get_command() {
                     break;
                 }
+                if self.base.cmd_trials > MAX_CMD_TRIALS {
+                    debug!(target: &self.base.name, "SSL stream loop timed out");
+                    if self.base.cmd == Command::Recv {
+                        if let Err(_) = self.base.report_recv_payload() { failed = true; }
+                    }
+                    break;
+                }
+
                 if let Err(e) = self.base.execute_ssl_command(&mut ssl_stream) {
                     if e == CmdExecResult::Fail {
                         failed = true;
@@ -822,6 +915,9 @@ impl Client {
                 let ss = ssl_stream.get_shutdown();
                 if ss == ShutdownState::RECEIVED || ss == ShutdownState::SENT {
                     debug!(target: &self.base.name, "SSL stream shuts down");
+                    if self.base.cmd == Command::Recv {
+                        if let Err(_) = self.base.report_recv_payload() { failed = true; }
+                    }
                     break;
                 }
             }
@@ -866,6 +962,8 @@ struct TestEndBase {
     payload: String,
     recv_payload: String,
     recv_trials: i32,
+    cmd_trials: i32,
+    disconnect_detect_trials: i32,
 }
 
 impl TestEndBase {
@@ -880,12 +978,14 @@ impl TestEndBase {
             payload: "".to_string(),
             recv_payload: "".to_string(),
             recv_trials: 0,
+            cmd_trials: 0,
+            disconnect_detect_trials: 0,
         }
     }
 
     fn configure_tcp_stream(&self, tcp_stream: &TcpStream) {
-        tcp_stream.set_read_timeout(Some(Duration::from_secs(self.proto.read_timeout))).expect("Cannot set write_timeout");
-        tcp_stream.set_write_timeout(Some(Duration::from_secs(self.proto.write_timeout))).expect("Cannot set write_timeout");
+        tcp_stream.set_read_timeout(Some(Duration::from_millis(self.proto.read_timeout))).expect("Cannot set write_timeout");
+        tcp_stream.set_write_timeout(Some(Duration::from_millis(self.proto.write_timeout))).expect("Cannot set write_timeout");
         tcp_stream.set_ttl(self.proto.ip_ttl).expect("Cannot set ip_ttl");
         if self.proto.tcp_nodelay {
             tcp_stream.set_nodelay(true).expect("Cannot disable TCP_NODELAY");
@@ -899,6 +999,8 @@ impl TestEndBase {
         self.payload.clear();
         self.recv_payload.clear();
         self.recv_trials = 0;
+        self.cmd_trials = 0;
+        self.disconnect_detect_trials = 0;
     }
 
     fn get_command(&mut self) -> Result<(), RecvTimeoutError> {
@@ -906,6 +1008,7 @@ impl TestEndBase {
             Ok(msg) => {
                 self.cmd = msg.cmd;
                 self.payload = msg.payload;
+                self.cmd_trials = 0;
                 debug!(target: &self.name, "Msg from mgr ({}): ({}, {})", self.payload.len(), self.cmd, self.payload);
             }
             Err(e) => {
@@ -918,33 +1021,31 @@ impl TestEndBase {
         Ok(())
     }
 
-    fn process_recv_payload(&mut self) -> Result<(), ProcessRecvPayloadError> {
-        self.recv_trials += 1;
-        if self.recv_payload.len() < self.payload.len() &&
-            (self.payload.starts_with(&self.recv_payload) || self.recv_payload.is_empty()) &&
-            self.recv_trials < MAX_RECV_TRIALS {
-            trace!(target: &self.name, "Received partial payload ({}): {}", self.recv_payload.len(), self.recv_payload);
-            return Ok(());
-        }
-
+    fn report_recv_payload(&mut self) -> Result<(), ()> {
         let mut rv = Ok(());
 
         if !self.payload.eq(&self.recv_payload) {
-            if self.proto.proto == Proto::Tcp && self.recv_payload.is_empty() {
-                // ATTENTION: Timeout is the only way we can determine TCP disconnect, otherwise SSL disconnect detection is fine
-                debug!(target: &self.name, "TCP stream timed out (assume disconnected) for {}, payload({})= {}, recv_payload({})= {}",
-                       self.cmd, self.payload.len(), self.payload, self.recv_payload.len(), self.recv_payload);
-                return Err(ProcessRecvPayloadError::Timeout);
-            }
-
             debug!(target: &self.name, "Payloads do NOT match for {}, payload({})= {}, recv_payload({})= {}",
                    self.cmd, self.payload.len(), self.payload, self.recv_payload.len(), self.recv_payload);
-            rv = Err(ProcessRecvPayloadError::Fail);
+            rv = Err(());
         }
 
         self.tx.send(Msg::new(Command::Recv, self.recv_payload.clone())).unwrap();
         self.reset_command();
         rv
+    }
+
+    fn process_recv_payload(&mut self) -> Result<(), ()> {
+        self.recv_trials += 1;
+        // ATTENTION: Wait for any extra data even after payload matches exactly, because the proxy should not send anything else
+        if (self.payload.starts_with(&self.recv_payload) || self.recv_payload.is_empty()) &&
+            self.recv_trials < MAX_RECV_TRIALS {
+            trace!(target: &self.name, "Recv trial {} ({}): {}", self.recv_trials, self.recv_payload.len(), self.recv_payload);
+            return Ok(());
+        }
+
+        trace!(target: &self.name, "Reporting after recv trial {} ({}): {}", self.recv_trials, self.recv_payload.len(), self.recv_payload);
+        self.report_recv_payload()
     }
 
     // TODO: Can we improve code reuse with execute_tcp_command()?
@@ -982,37 +1083,17 @@ impl TestEndBase {
                 // Do not use ssl_read() here, it doesn't accept 0 bytes as received?
                 match ssl_stream.ssl_read(&mut line) {
                     Ok(n) => {
+                        trace!(target: &self.name, "SSL stream recv_payload: {}", self.recv_trials);
+                        self.recv_trials = 0;
                         self.recv_payload.push_str(&String::from_utf8_lossy(&line[0..n]).to_string());
-                        match self.process_recv_payload() {
-                            Ok(()) => {}
-                            Err(ProcessRecvPayloadError::Timeout) => { return Err(CmdExecResult::Timeout); }
-                            Err(ProcessRecvPayloadError::Fail) => { return Err(CmdExecResult::Fail); }
-                        }
                     }
-                    Err(ref e) if e.code() == ErrorCode::ZERO_RETURN => {
-                        // ZERO_RETURN is not an error, we can receive empty payloads
-                        debug!(target: &self.name, "SSL stream ZERO_RETURN: {}", e.to_string());
-                        match self.process_recv_payload() {
-                            Ok(()) => {}
-                            Err(ProcessRecvPayloadError::Timeout) => { return Err(CmdExecResult::Timeout); }
-                            Err(ProcessRecvPayloadError::Fail) => { return Err(CmdExecResult::Fail); }
-                        }
-                    }
-                    Err(ref e) if (e.code() == ErrorCode::WANT_READ || e.code() == ErrorCode::WANT_CLIENT_HELLO_CB) && e.io_error().is_none() => {
-                        warn!(target: &self.name, "SSL stream WANT_READ|WANT_CLIENT_HELLO_CB error: {}", e.to_string());
-                        self.recv_trials += 1;
-                        if self.recv_trials >= MAX_RECV_TRIALS {
-                            self.tx.send(Msg::new(Command::Recv, self.recv_payload.clone())).unwrap();
-                            self.reset_command();
-                            return Err(CmdExecResult::Fail);
-                        }
-                    }
+                    // TODO: Should we handle ErrorCode::ZERO_RETURN and other errors separately?
                     Err(e) => {
-                        error!(target: &self.name, "SSL stream read error: {}", e.to_string());
-                        self.tx.send(Msg::new(Command::Recv, self.recv_payload.clone())).unwrap();
-                        self.reset_command();
-                        return Err(CmdExecResult::Fail);
+                        debug!(target: &self.name, "SSL stream read error: {}", e.to_string());
                     }
+                }
+                if let Err(_) = self.process_recv_payload() {
+                    return Err(CmdExecResult::Fail);
                 }
             }
             Command::Quit => {
@@ -1062,20 +1143,33 @@ impl TestEndBase {
                 // Do not use read_to_string() or read_to_end() here, they don't read anything
                 match tcp_stream.read(&mut line) {
                     Ok(n) => {
-                        self.recv_payload.push_str(&String::from_utf8_lossy(&line[0..n]).to_string());
-                        match self.process_recv_payload() {
-                            Ok(()) => {}
-                            Err(ProcessRecvPayloadError::Timeout) => { return Err(CmdExecResult::Timeout); }
-                            Err(ProcessRecvPayloadError::Fail) => { return Err(CmdExecResult::Fail); }
+                        let recv = &String::from_utf8_lossy(&line[0..n]).to_string();
+                        trace!(target: &self.name, "TCP stream read OK ({}): {}", recv.len(), recv);
+                        if recv.is_empty() {
+                            self.disconnect_detect_trials += 1;
+                            trace!(target: &self.name, "TCP stream read disconnect detect trial: {}", self.disconnect_detect_trials);
+                            if self.disconnect_detect_trials >= MAX_RECV_DISCONNECT_DETECT {
+                                debug!(target: &self.name, "TCP stream read DISCONNECT detected");
+                                self.recv_payload.push_str(recv);
+
+                                if let Err(_) = self.report_recv_payload() {
+                                    return Err(CmdExecResult::Fail);
+                                }
+                                return Err(CmdExecResult::Disconnect);
+                            }
+                        } else {
+                            self.recv_trials = 0;
+                            self.disconnect_detect_trials = 0;
                         }
+                        self.recv_payload.push_str(recv);
                     }
                     // TODO: Handle WouldBlock and other errors separately?
                     Err(e) => {
-                        error!(target: &self.name, "TCP stream read error: {}", e.to_string());
-                        self.tx.send(Msg::new(Command::Recv, self.recv_payload.clone())).unwrap();
-                        self.reset_command();
-                        return Err(CmdExecResult::Fail);
+                        debug!(target: &self.name, "TCP stream read error: {}", e.to_string());
                     }
+                }
+                if let Err(_) = self.process_recv_payload() {
+                    return Err(CmdExecResult::Fail);
                 }
             }
             Command::Quit => {
@@ -1091,4 +1185,3 @@ impl TestEndBase {
         Ok(())
     }
 }
-
