@@ -63,7 +63,7 @@ const MAX_RECV_DISCONNECT_DETECT: i32 = 4;
 
 const MAX_RECV_TRIALS: i32 = MAX_RECV_DISCONNECT_DETECT + 1;
 
-const MAX_CONNECT_TIMEOUT_TRIALS: i32 = MAX_RECV_TRIALS * 10;
+const MAX_CONNECT_TIMEOUT_TRIALS: i32 = MAX_RECV_TRIALS * 20;
 
 // Command exec loops time out after MAX_CMD_TRIALS * read_timeout millis (we loop receiving only)
 const MAX_CMD_TRIALS: i32 = MAX_CONNECT_TIMEOUT_TRIALS * 10;
@@ -97,6 +97,15 @@ enum Proto {
     Ssl,
 }
 
+impl Display for Proto {
+    fn fmt(&self, fmt: &mut Formatter) -> fmt::Result {
+        match self {
+            Proto::Tcp => write!(fmt, "TCP"),
+            Proto::Ssl => write!(fmt, "SSL"),
+        }
+    }
+}
+
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 struct ProtoConfig {
     proto: Proto,
@@ -113,11 +122,16 @@ struct ProtoConfig {
 }
 
 #[derive(Deserialize, Debug)]
-struct TestSet {
-    comment: String,
+struct TestConfig {
     proto: BTreeMap<String, String>,
     proxy: Address,
     server: Address,
+}
+
+#[derive(Deserialize, Debug)]
+struct TestSet {
+    comment: String,
+    configs: BTreeMap<i32, TestConfig>,
     tests: BTreeMap<i32, Test>,
 }
 
@@ -315,7 +329,7 @@ impl Manager {
         Manager {
             hid,
             sid,
-            name: format!("MGR.h{}.s{}", hid, sid),
+            name: format!("MGR.h{}.s{}.c0", hid, sid),
             state: 1,
             testend: TestEnd::None,
             cmd: Command::None,
@@ -334,31 +348,35 @@ impl Manager {
         }
     }
 
-    fn configure_proto(&self, testset: &TestSet) -> ProtoConfig {
+    fn name(&self, cid: i32) -> String {
+        format!("MGR.h{}.s{}.c{}", self.hid, self.sid, cid)
+    }
+
+    fn configure_proto(&self, testconfig: &TestConfig) -> ProtoConfig {
         let mut proto = Proto::Tcp;
 
         let mut connect_timeout = CONNECT_TIMEOUT;
-        if testset.proto.contains_key("connect_timeout") {
-            connect_timeout = testset.proto["connect_timeout"].parse().expect("Cannot parse connect_timeout");
+        if testconfig.proto.contains_key("connect_timeout") {
+            connect_timeout = testconfig.proto["connect_timeout"].parse().expect("Cannot parse connect_timeout");
         }
 
         let mut read_timeout = READ_TIMEOUT;
-        if testset.proto.contains_key("read_timeout") {
-            read_timeout = testset.proto["read_timeout"].parse().expect("Cannot parse read_timeout");
+        if testconfig.proto.contains_key("read_timeout") {
+            read_timeout = testconfig.proto["read_timeout"].parse().expect("Cannot parse read_timeout");
         }
 
         let mut write_timeout = WRITE_TIMEOUT;
-        if testset.proto.contains_key("write_timeout") {
-            write_timeout = testset.proto["write_timeout"].parse().expect("Cannot parse write_timeout");
+        if testconfig.proto.contains_key("write_timeout") {
+            write_timeout = testconfig.proto["write_timeout"].parse().expect("Cannot parse write_timeout");
         }
 
         let mut ip_ttl = 15;
-        if testset.proto.contains_key("ip_ttl") {
-            ip_ttl = testset.proto["ip_ttl"].parse().expect("Cannot parse ip_ttl");
+        if testconfig.proto.contains_key("ip_ttl") {
+            ip_ttl = testconfig.proto["ip_ttl"].parse().expect("Cannot parse ip_ttl");
         }
 
         let mut tcp_nodelay = true;
-        if testset.proto.contains_key("tcp_nodelay") && testset.proto["tcp_nodelay"].eq("no") {
+        if testconfig.proto.contains_key("tcp_nodelay") && testconfig.proto["tcp_nodelay"].eq("no") {
             tcp_nodelay = false;
         }
 
@@ -368,22 +386,22 @@ impl Manager {
         let mut use_sni = false;
         let mut verify_hostname = false;
 
-        if testset.proto["proto"].eq("ssl") {
+        if testconfig.proto["proto"].eq("ssl") {
             proto = Proto::Ssl;
 
-            if testset.proto.contains_key("crt") {
-                crt = testset.proto["crt"].clone();
+            if testconfig.proto.contains_key("crt") {
+                crt = testconfig.proto["crt"].clone();
             }
-            if testset.proto.contains_key("key") {
-                key = testset.proto["key"].clone();
+            if testconfig.proto.contains_key("key") {
+                key = testconfig.proto["key"].clone();
             }
-            if testset.proto.contains_key("verify_peer") && testset.proto["verify_peer"].eq("yes") {
+            if testconfig.proto.contains_key("verify_peer") && testconfig.proto["verify_peer"].eq("yes") {
                 verify_peer = true;
             }
-            if testset.proto.contains_key("use_sni") && testset.proto["use_sni"].eq("yes") {
+            if testconfig.proto.contains_key("use_sni") && testconfig.proto["use_sni"].eq("yes") {
                 use_sni = true;
             }
-            if testset.proto.contains_key("verify_hostname") && testset.proto["verify_hostname"].eq("yes") {
+            if testconfig.proto.contains_key("verify_hostname") && testconfig.proto["verify_hostname"].eq("yes") {
                 verify_hostname = true;
             }
         }
@@ -556,60 +574,67 @@ impl Manager {
     }
 
     fn run(&mut self, testset: TestSet) {
-        warn!("Start test set {}: {}", self.sid, testset.comment);
+        for (&cid, testconfig) in testset.configs.iter() {
+            self.name = self.name(cid);
 
-        for (&tid, test) in testset.tests.iter() {
-            debug!(target: &self.name, "{}", test.comment);
+            let proto = self.configure_proto(&testconfig);
+            warn!(target: &self.name, "Start test set {} for {} test config {}: {}", self.sid, proto.proto, cid, testset.comment);
 
-            let (cli2mgr_tx, cli2mgr_rx) = mpsc::channel();
-            self.cli2mgr_tx = cli2mgr_tx;
-            self.cli2mgr_rx = cli2mgr_rx;
-            trace!(target: &self.name, "Created new cli2mgr channel");
+            for (&tid, test) in testset.tests.iter() {
+                debug!(target: &self.name, "{}", test.comment);
 
-            let (srv2mgr_tx, srv2mgr_rx) = mpsc::channel();
-            self.srv2mgr_tx = srv2mgr_tx;
-            self.srv2mgr_rx = srv2mgr_rx;
-            trace!(target: &self.name, "Created new srv2mgr channel");
+                let (cli2mgr_tx, cli2mgr_rx) = mpsc::channel();
+                self.cli2mgr_tx = cli2mgr_tx;
+                self.cli2mgr_rx = cli2mgr_rx;
+                trace!(target: &self.name, "Created new cli2mgr channel");
 
-            let (mgr2cli_tx, mgr2cli_rx) = mpsc::channel();
-            self.mgr2cli_tx = mgr2cli_tx;
-            self.mgr2cli_rx = Arc::new(Mutex::new(mgr2cli_rx));
-            trace!(target: &self.name, "Created new mgr2cli channel");
+                let (srv2mgr_tx, srv2mgr_rx) = mpsc::channel();
+                self.srv2mgr_tx = srv2mgr_tx;
+                self.srv2mgr_rx = srv2mgr_rx;
+                trace!(target: &self.name, "Created new srv2mgr channel");
 
-            let (mgr2srv_tx, mgr2srv_rx) = mpsc::channel();
-            self.mgr2srv_tx = mgr2srv_tx;
-            self.mgr2srv_rx = Arc::new(Mutex::new(mgr2srv_rx));
-            trace!(target: &self.name, "Created new mgr2srv channel");
+                let (mgr2cli_tx, mgr2cli_rx) = mpsc::channel();
+                self.mgr2cli_tx = mgr2cli_tx;
+                self.mgr2cli_rx = Arc::new(Mutex::new(mgr2cli_rx));
+                trace!(target: &self.name, "Created new mgr2cli channel");
 
-            let proto = self.configure_proto(&testset);
+                let (mgr2srv_tx, mgr2srv_rx) = mpsc::channel();
+                self.mgr2srv_tx = mgr2srv_tx;
+                self.mgr2srv_rx = Arc::new(Mutex::new(mgr2srv_rx));
+                trace!(target: &self.name, "Created new mgr2srv channel");
 
-            let mut server = Server::new(self.hid, self.sid, tid, self.srv2mgr_tx.clone(), Arc::clone(&self.mgr2srv_rx),
-                                         proto.clone(), testset.server.clone());
+                let mut server = Server::new(self.hid, self.sid, cid, tid, self.srv2mgr_tx.clone(), Arc::clone(&self.mgr2srv_rx),
+                                             proto.clone(), testconfig.server.clone());
 
-            let server_thread = thread::spawn(move || server.run());
-            debug!(target: &self.name, "Spawned server for test {}", tid);
+                let server_thread = thread::spawn(move || server.run());
+                debug!(target: &self.name, "Spawned server for test {}", tid);
 
-            let mut client = Client::new(self.hid, self.sid, tid, self.cli2mgr_tx.clone(), Arc::clone(&self.mgr2cli_rx),
-                                         proto.clone(), testset.proxy.clone());
+                let mut client = Client::new(self.hid, self.sid, cid, tid, self.cli2mgr_tx.clone(), Arc::clone(&self.mgr2cli_rx),
+                                             proto.clone(), testconfig.proxy.clone());
 
-            let client_thread = thread::spawn(move || client.run());
-            debug!(target: &self.name, "Spawned client for test {}", tid);
+                let client_thread = thread::spawn(move || client.run());
+                debug!(target: &self.name, "Spawned client for test {}", tid);
 
-            self.clone_test(test);
+                self.clone_test(test);
 
-            self.run_test();
+                self.run_test();
 
-            if let Ok(rv) = server_thread.join() {
-                self.test_failed |= rv;
+                if let Ok(rv) = server_thread.join() {
+                    self.test_failed |= rv;
+                }
+                if let Ok(rv) = client_thread.join() {
+                    self.test_failed |= rv;
+                }
+
+                if !self.test_failed && self.state == self.teststate_ids.len() {
+                    info!(target: &self.name, "Test {} succeeded: {}", tid, test.comment);
+                } else {
+                    error!(target: &self.name, "Test {} failed: {}", tid, test.comment);
+                    break;
+                }
             }
-            if let Ok(rv) = client_thread.join() {
-                self.test_failed |= rv;
-            }
 
-            if !self.test_failed && self.state == self.teststate_ids.len() {
-                info!(target: &self.name, "Test {} succeeded: {}", tid, test.comment);
-            } else {
-                error!(target: &self.name, "Test {} failed: {}", tid, test.comment);
+            if self.test_failed {
                 break;
             }
         }
@@ -620,15 +645,17 @@ impl Manager {
 struct Server {
     hid: i32,
     sid: i32,
+    cid: i32,
     tid: i32,
     base: TestEndBase,
 }
 
 impl Server {
-    fn new(hid: i32, sid: i32, tid: i32, srv2mgr_tx: Sender<Msg>, mgr2srv_rx: Arc<Mutex<mpsc::Receiver<Msg>>>, proto: ProtoConfig, addr: Address) -> Self {
+    fn new(hid: i32, sid: i32, cid: i32, tid: i32, srv2mgr_tx: Sender<Msg>, mgr2srv_rx: Arc<Mutex<mpsc::Receiver<Msg>>>, proto: ProtoConfig, addr: Address) -> Self {
         let mut server = Server {
             hid,
             sid,
+            cid,
             tid,
             base: TestEndBase::new("".to_string(), srv2mgr_tx, mgr2srv_rx, proto, addr),
         };
@@ -637,7 +664,7 @@ impl Server {
     }
 
     fn name(&self, stream_id: i32) -> String {
-        format!("SRV.h{}.s{}.t{}.{}", self.hid, self.sid, self.tid, stream_id)
+        format!("SRV.h{}.s{}.c{}.t{}.{}", self.hid, self.sid, self.cid, self.tid, stream_id)
     }
 
     fn run_tcp(&mut self, tcp_stream: &TcpStream, failed: &mut bool) -> bool {
@@ -845,9 +872,9 @@ struct Client {
 }
 
 impl Client {
-    fn new(hid: i32, sid: i32, tid: i32, cli2mgr_tx: Sender<Msg>, mgr2cli_rx: Arc<Mutex<mpsc::Receiver<Msg>>>, proto: ProtoConfig, addr: Address) -> Self {
+    fn new(hid: i32, sid: i32, cid: i32, tid: i32, cli2mgr_tx: Sender<Msg>, mgr2cli_rx: Arc<Mutex<mpsc::Receiver<Msg>>>, proto: ProtoConfig, addr: Address) -> Self {
         Client {
-            base: TestEndBase::new(format!("CLI.h{}.s{}.t{}", hid, sid, tid), cli2mgr_tx, mgr2cli_rx, proto, addr),
+            base: TestEndBase::new(format!("CLI.h{}.s{}.c{}.t{}", hid, sid, cid, tid), cli2mgr_tx, mgr2cli_rx, proto, addr),
         }
     }
 
