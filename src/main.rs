@@ -55,21 +55,22 @@ const CONNECT_TIMEOUT: u64 = 1000;
 const READ_TIMEOUT: u64 = 100;
 const WRITE_TIMEOUT: u64 = 100;
 
-const MAX_TEST_TRIALS: i32 = 100;
-
-// Command exec loops time out after MAX_CMD_TRIALS * read_timeout millis (we loop receiving only)
-const MAX_CMD_TRIALS: i32 = 100;
-
-// MAX_CONNECT_TRIALS * CONN_TIMEOUT == 1 sec
-const MAX_CONNECT_TRIALS: i32 = 100;
-const MAX_CONNECT_TIMEOUT_TRIALS: i32 = 100;
-const CONN_TIMEOUT: Duration = Duration::from_millis(10);
+const WAIT_STREAM_CONNECT: Duration = Duration::from_millis(10);
+const MAX_STREAM_CONNECT_TRIALS: i32 = 100;
 
 // For TCP disconnect detection
-const MAX_RECV_DISCONNECT_DETECT: i32 = 5;
+const MAX_RECV_DISCONNECT_DETECT: i32 = 4;
 
-const MAX_RECV_TRIALS: i32 = 5;
-const BUF_SIZE: usize = 1024;
+const MAX_RECV_TRIALS: i32 = MAX_RECV_DISCONNECT_DETECT + 1;
+
+const MAX_CONNECT_TIMEOUT_TRIALS: i32 = MAX_RECV_TRIALS * 10;
+
+// Command exec loops time out after MAX_CMD_TRIALS * read_timeout millis (we loop receiving only)
+const MAX_CMD_TRIALS: i32 = MAX_CONNECT_TIMEOUT_TRIALS * 10;
+
+const MAX_TEST_TRIALS: i32 = MAX_CONNECT_TIMEOUT_TRIALS * 10;
+
+const BUF_SIZE: usize = 16384;
 
 #[derive(Deserialize, Debug)]
 struct TestState {
@@ -508,8 +509,6 @@ impl Manager {
             let mut test_trials = 0;
             let mut exit = false;
             loop {
-                test_trials += 1;
-
                 match self.recv_msg(TestEnd::Server) {
                     RecvMsgResult::SendCommand => {
                         if let SendCommandResult::TestFinished = self.send_next_command() {
@@ -537,11 +536,12 @@ impl Manager {
                     RecvMsgResult::None => {}
                 }
 
+                test_trials += 1;
+                trace!(target: &self.name, "Test loop trial {}", test_trials);
                 if test_trials > MAX_TEST_TRIALS {
-                    debug!(target: &self.name, "Test loop timed out");
+                    error!(target: &self.name, "Test loop timed out");
+                    self.test_failed = true;
                     exit = true;
-                } else {
-                    trace!(target: &self.name, "Test loop trial {}", test_trials);
                 }
 
                 if exit {
@@ -649,13 +649,11 @@ impl Server {
 
             if self.base.cmd == Command::None {
                 self.base.cmd_trials += 1;
+                trace!(target: &self.base.name, "TCP stream loop cmd trial {}", self.base.cmd_trials);
                 if self.base.cmd_trials > MAX_CMD_TRIALS {
-                    debug!(target: &self.base.name, "TCP stream loop timed out");
-                    // TODO: Disabling all self.base.cmd == Command::Recv if conditions gets the program stuck somewhere with log level 3, fix it (still true?)
-                    if self.base.cmd == Command::Recv {
-                        if let Err(_) = self.base.report_recv_payload() { break true; }
-                    }
-                    break false;
+                    error!(target: &self.base.name, "TCP stream loop timed out");
+                    *failed = true;
+                    break true;
                 }
             }
 
@@ -692,13 +690,13 @@ impl Server {
                 }
                 Err(e) => {
                     ssl_stream_trials += 1;
-                    debug!(target: &self.base.name, "SSL stream HandshakeError ({}): {}", ssl_stream_trials, e);
-                    if ssl_stream_trials >= MAX_CONNECT_TRIALS {
-                        error!(target: &self.base.name, "Reached max ssl accept trials");
+                    debug!(target: &self.base.name, "SSL stream connect HandshakeError ({}): {}", ssl_stream_trials, e);
+                    if ssl_stream_trials >= MAX_STREAM_CONNECT_TRIALS {
+                        error!(target: &self.base.name, "SSL stream connect timed out");
                         *failed = true;
                         break Err(e);
                     }
-                    thread::sleep(CONN_TIMEOUT);
+                    thread::sleep(WAIT_STREAM_CONNECT);
                 }
             }
         };
@@ -712,12 +710,11 @@ impl Server {
 
                 if self.base.cmd == Command::None {
                     self.base.cmd_trials += 1;
+                    trace!(target: &self.base.name, "SSL stream loop cmd trial {}", self.base.cmd_trials);
                     if self.base.cmd_trials > MAX_CMD_TRIALS {
-                        debug!(target: &self.base.name, "SSL stream loop timed out");
-                        if self.base.cmd == Command::Recv {
-                            if let Err(_) = self.base.report_recv_payload() { break true; }
-                        }
-                        break false;
+                        error!(target: &self.base.name, "SSL stream loop timed out");
+                        *failed = true;
+                        break true;
                     }
                 }
 
@@ -734,7 +731,9 @@ impl Server {
                 if ss == ShutdownState::RECEIVED || ss == ShutdownState::SENT {
                     debug!(target: &self.base.name, "SSL stream shuts down");
                     if self.base.cmd == Command::Recv {
-                        if let Err(_) = self.base.report_recv_payload() { break true; }
+                        if let Err(_) = self.base.report_recv_payload() {
+                            break true;
+                        }
                     }
                     break false;
                 }
@@ -803,12 +802,12 @@ impl Server {
                             self.base.reset_command();
                             tcp_stream_trials = 0;
                         }
-                    } else if tcp_stream_trials >= MAX_CONNECT_TRIALS {
-                        error!(target: &self.base.name, "Reached max tcp stream trials");
+                    } else if tcp_stream_trials >= MAX_STREAM_CONNECT_TRIALS {
+                        error!(target: &self.base.name, "TCP stream connect timed out");
                         failed = true;
                         break;
                     }
-                    thread::sleep(CONN_TIMEOUT);
+                    thread::sleep(WAIT_STREAM_CONNECT);
                 }
             }
 
@@ -824,8 +823,10 @@ impl Server {
             // Do not timeout, if we are executing a command already
             if self.base.cmd == Command::None {
                 self.base.cmd_trials += 1;
+                trace!(target: &self.base.name, "Server loop cmd trial {}", self.base.cmd_trials);
                 if self.base.cmd_trials > MAX_CMD_TRIALS {
-                    debug!(target: &self.base.name, "Server loop timed out");
+                    error!(target: &self.base.name, "Server loop timed out");
+                    failed = true;
                     break;
                 }
             }
@@ -863,11 +864,12 @@ impl Client {
                 Err(e) => {
                     tcp_stream_trials += 1;
                     debug!(target: &self.base.name, "TCP stream error ({}): {}", tcp_stream_trials, e);
-                    if tcp_stream_trials >= MAX_CONNECT_TRIALS {
+                    if tcp_stream_trials >= MAX_STREAM_CONNECT_TRIALS {
+                        error!(target: &self.base.name, "TCP stream connect timed out");
                         *failed = true;
                         break Err(e);
                     }
-                    thread::sleep(CONN_TIMEOUT);
+                    thread::sleep(WAIT_STREAM_CONNECT);
                 }
             }
         }
@@ -882,12 +884,10 @@ impl Client {
 
             if self.base.cmd == Command::None {
                 self.base.cmd_trials += 1;
+                trace!(target: &self.base.name, "TCP stream loop cmd trial {}", self.base.cmd_trials);
                 if self.base.cmd_trials > MAX_CMD_TRIALS {
-                    debug!(target: &self.base.name, "TCP stream loop timed out");
-                    if self.base.cmd == Command::Recv {
-                        if let Err(_) = self.base.report_recv_payload() { break true; }
-                    }
-                    break false;
+                    error!(target: &self.base.name, "TCP stream loop timed out");
+                    break true;
                 }
             }
 
@@ -928,11 +928,12 @@ impl Client {
                 Err(e) => {
                     ssl_stream_trials += 1;
                     debug!(target: &self.base.name, "SSL stream error ({}): {}", ssl_stream_trials, e);
-                    if ssl_stream_trials >= MAX_CONNECT_TRIALS {
+                    if ssl_stream_trials >= MAX_STREAM_CONNECT_TRIALS {
+                        error!(target: &self.base.name, "SSL stream connect timed out");
                         failed = true;
                         break Err(e);
                     }
-                    thread::sleep(CONN_TIMEOUT);
+                    thread::sleep(WAIT_STREAM_CONNECT);
                 }
             }
         };
@@ -946,11 +947,10 @@ impl Client {
 
                 if self.base.cmd == Command::None {
                     self.base.cmd_trials += 1;
+                    trace!(target: &self.base.name, "SSL stream loop cmd trial {}", self.base.cmd_trials);
                     if self.base.cmd_trials > MAX_CMD_TRIALS {
-                        debug!(target: &self.base.name, "SSL stream loop timed out");
-                        if self.base.cmd == Command::Recv {
-                            if let Err(_) = self.base.report_recv_payload() { failed = true; }
-                        }
+                        error!(target: &self.base.name, "SSL stream loop timed out");
+                        failed = true;
                         break;
                     }
                 }
