@@ -5,7 +5,7 @@
       "proto": {
         "proto": "tcp"
       },
-      "proxy": {
+      "client": {
         "ip": "127.0.0.1",
         "port": "8181"
       },
@@ -20,7 +20,7 @@
         "crt": "server.crt",
         "key": "server.key"
       },
-      "proxy": {
+      "client": {
         "ip": "127.0.0.1",
         "port": "8444"
       },

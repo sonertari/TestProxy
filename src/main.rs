@@ -38,7 +38,9 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
-use openssl::ssl::{HandshakeError, ShutdownState, SslAcceptor, SslConnector, SslFiletype, SslMethod, SslStream, SslVerifyMode};
+use openssl::ec::EcKey;
+use openssl::nid::Nid;
+use openssl::ssl::{HandshakeError, ShutdownState, SslAcceptor, SslConnector, SslFiletype, SslMethod, SslOptions, SslStream, SslVerifyMode, SslVersion};
 use serde::{Deserialize, Deserializer};
 use structopt::StructOpt;
 
@@ -86,12 +88,6 @@ struct Test {
 }
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
-struct Address {
-    ip: String,
-    port: String,
-}
-
-#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 enum Proto {
     Tcp,
     Ssl,
@@ -119,13 +115,24 @@ struct ProtoConfig {
     verify_peer: bool,
     use_sni: bool,
     verify_hostname: bool,
+    ciphers: String,
+    min_proto_version: String,
+    max_proto_version: String,
+    no_ssl2: bool,
+    no_ssl3: bool,
+    no_tls10: bool,
+    no_tls11: bool,
+    no_tls12: bool,
+    no_tls13: bool,
+    compression: bool,
+    ecdhcurve: String,
 }
 
 #[derive(Deserialize, Debug)]
 struct TestConfig {
     proto: BTreeMap<String, String>,
-    proxy: Address,
-    server: Address,
+    client: BTreeMap<String, String>,
+    server: BTreeMap<String, String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -376,8 +383,8 @@ impl Manager {
         }
 
         let mut tcp_nodelay = true;
-        if testconfig.proto.contains_key("tcp_nodelay") && testconfig.proto["tcp_nodelay"].eq("no") {
-            tcp_nodelay = false;
+        if testconfig.proto.contains_key("tcp_nodelay") {
+            tcp_nodelay = testconfig.proto["tcp_nodelay"].eq("yes");
         }
 
         let mut crt = "".to_string();
@@ -385,6 +392,18 @@ impl Manager {
         let mut verify_peer = false;
         let mut use_sni = false;
         let mut verify_hostname = false;
+        let mut ciphers = "ALL:-aNULL".to_string();
+        let mut min_proto_version = "ssl3".to_string();
+        let mut max_proto_version = "tls13".to_string();
+        let mut no_ssl2 = false;
+        let mut no_ssl3 = false;
+        let mut no_tls10 = false;
+        let mut no_tls11 = false;
+        let mut no_tls12 = false;
+        let mut no_tls13 = false;
+        let mut compression = false;
+        // TODO: Check why no other ecdh curve works
+        let mut ecdhcurve = "prime256v1".to_string();
 
         if testconfig.proto["proto"].eq("ssl") {
             proto = Proto::Ssl;
@@ -395,17 +414,73 @@ impl Manager {
             if testconfig.proto.contains_key("key") {
                 key = testconfig.proto["key"].clone();
             }
-            if testconfig.proto.contains_key("verify_peer") && testconfig.proto["verify_peer"].eq("yes") {
-                verify_peer = true;
+            if testconfig.proto.contains_key("verify_peer") {
+                verify_peer = testconfig.proto["verify_peer"].eq("yes");
             }
-            if testconfig.proto.contains_key("use_sni") && testconfig.proto["use_sni"].eq("yes") {
-                use_sni = true;
+            if testconfig.proto.contains_key("use_sni") {
+                use_sni = testconfig.proto["use_sni"].eq("yes");
             }
-            if testconfig.proto.contains_key("verify_hostname") && testconfig.proto["verify_hostname"].eq("yes") {
-                verify_hostname = true;
+            if testconfig.proto.contains_key("verify_hostname") {
+                verify_hostname = testconfig.proto["verify_hostname"].eq("yes");
+            }
+            if testconfig.proto.contains_key("ciphers") {
+                ciphers = testconfig.proto["ciphers"].clone();
+            }
+            if testconfig.proto.contains_key("min_proto_version") {
+                min_proto_version = testconfig.proto["min_proto_version"].clone();
+            }
+            if testconfig.proto.contains_key("max_proto_version") {
+                max_proto_version = testconfig.proto["max_proto_version"].clone();
+            }
+            if testconfig.proto.contains_key("no_ssl2") {
+                no_ssl2 = testconfig.proto["no_ssl2"].eq("yes");
+            }
+            if testconfig.proto.contains_key("no_ssl3") {
+                no_ssl3 = testconfig.proto["no_ssl3"].eq("yes");
+            }
+            if testconfig.proto.contains_key("no_tls10") {
+                no_tls10 = testconfig.proto["no_tls10"].eq("yes");
+            }
+            if testconfig.proto.contains_key("no_tls11") {
+                no_tls11 = testconfig.proto["no_tls11"].eq("yes");
+            }
+            if testconfig.proto.contains_key("no_tls12") {
+                no_tls12 = testconfig.proto["no_tls12"].eq("yes");
+            }
+            if testconfig.proto.contains_key("no_tls13") {
+                no_tls13 = testconfig.proto["no_tls13"].eq("yes");
+            }
+            if testconfig.proto.contains_key("compression") {
+                compression = testconfig.proto["compression"].eq("yes");
+            }
+            if testconfig.proto.contains_key("ecdhcurve") {
+                ecdhcurve = testconfig.proto["ecdhcurve"].clone();
             }
         }
-        ProtoConfig { proto, connect_timeout, read_timeout, write_timeout, ip_ttl, tcp_nodelay, crt, key, verify_peer, use_sni, verify_hostname }
+        ProtoConfig {
+            proto,
+            connect_timeout,
+            read_timeout,
+            write_timeout,
+            ip_ttl,
+            tcp_nodelay,
+            crt,
+            key,
+            verify_peer,
+            use_sni,
+            verify_hostname,
+            ciphers,
+            min_proto_version,
+            max_proto_version,
+            no_ssl2,
+            no_ssl3,
+            no_tls10,
+            no_tls11,
+            no_tls12,
+            no_tls13,
+            compression,
+            ecdhcurve,
+        }
     }
 
     fn clone_test(&mut self, test: &Test) {
@@ -610,7 +685,7 @@ impl Manager {
                 debug!(target: &self.name, "Spawned server for test {}", tid);
 
                 let mut client = Client::new(self.hid, self.sid, cid, tid, self.cli2mgr_tx.clone(), Arc::clone(&self.mgr2cli_rx),
-                                             proto.clone(), testconfig.proxy.clone());
+                                             proto.clone(), testconfig.client.clone());
 
                 let client_thread = thread::spawn(move || client.run());
                 debug!(target: &self.name, "Spawned client for test {}", tid);
@@ -651,13 +726,13 @@ struct Server {
 }
 
 impl Server {
-    fn new(hid: i32, sid: i32, cid: i32, tid: i32, srv2mgr_tx: Sender<Msg>, mgr2srv_rx: Arc<Mutex<mpsc::Receiver<Msg>>>, proto: ProtoConfig, addr: Address) -> Self {
+    fn new(hid: i32, sid: i32, cid: i32, tid: i32, srv2mgr_tx: Sender<Msg>, mgr2srv_rx: Arc<Mutex<mpsc::Receiver<Msg>>>, proto: ProtoConfig, config: BTreeMap<String, String>) -> Self {
         let mut server = Server {
             hid,
             sid,
             cid,
             tid,
-            base: TestEndBase::new("".to_string(), srv2mgr_tx, mgr2srv_rx, proto, addr),
+            base: TestEndBase::new("".to_string(), srv2mgr_tx, mgr2srv_rx, proto, config),
         };
         server.base.name = server.name(0);
         server
@@ -700,12 +775,46 @@ impl Server {
         let mut exit = false;
 
         let mut sab = SslAcceptor::mozilla_intermediate(SslMethod::tls()).unwrap();
-        if !self.base.proto.verify_peer {
-            // Otherwise use defaults
+        if self.base.proto.verify_peer {
+            sab.set_verify(SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT);
+        } else {
             sab.set_verify(SslVerifyMode::NONE);
         }
-        sab.set_certificate_file(&self.base.proto.crt, SslFiletype::PEM).unwrap();
-        sab.set_private_key_file(&self.base.proto.key, SslFiletype::PEM).unwrap();
+
+        sab.set_certificate_file(&self.base.proto.crt, SslFiletype::PEM).expect("Cannot set crt file");
+        sab.set_private_key_file(&self.base.proto.key, SslFiletype::PEM).expect("Cannot set key file");
+
+        sab.set_cipher_list(&self.base.proto.ciphers).expect("Cannot set cipher list");
+
+        sab.set_min_proto_version(Some(str2sslversion(&self.base.proto.min_proto_version))).expect("Cannot set min proto version");
+        sab.set_max_proto_version(Some(str2sslversion(&self.base.proto.max_proto_version))).expect("Cannot set max proto version");
+
+        if self.base.proto.no_ssl2 {
+            sab.set_options(SslOptions::NO_SSLV2);
+        }
+        if self.base.proto.no_ssl3 {
+            sab.set_options(SslOptions::NO_SSLV3);
+        }
+        if self.base.proto.no_tls10 {
+            sab.set_options(SslOptions::NO_TLSV1);
+        }
+        if self.base.proto.no_tls11 {
+            sab.set_options(SslOptions::NO_TLSV1_1);
+        }
+        if self.base.proto.no_tls12 {
+            sab.set_options(SslOptions::NO_TLSV1_2);
+        }
+        if self.base.proto.no_tls13 {
+            sab.set_options(SslOptions::NO_TLSV1_3);
+        }
+        if !self.base.proto.compression {
+            sab.set_options(SslOptions::NO_COMPRESSION);
+        }
+
+        let ecdh = EcKey::from_curve_name(Nid::from_raw(ssl_nid_by_name(&self.base.proto.ecdhcurve))).expect("Cannot create EcKey");
+        // TODO: Check why the editor wants EcKeyRef, but the compiler is fine with &ecdh below
+        sab.set_tmp_ecdh(&ecdh).expect("Cannot set ecdh");
+
         let acceptor = sab.build();
 
         let mut ssl_stream_trials = 0;
@@ -774,7 +883,7 @@ impl Server {
     }
 
     fn run(&mut self) -> bool {
-        let addr = format!("{}:{}", self.base.addr.ip, self.base.addr.port);
+        let addr = format!("{}:{}", self.base.ip, self.base.port);
         let server = TcpListener::bind(addr.clone()).unwrap();
         debug!(target: &self.base.name, "TCP listener connected to {}", addr);
 
@@ -872,14 +981,14 @@ struct Client {
 }
 
 impl Client {
-    fn new(hid: i32, sid: i32, cid: i32, tid: i32, cli2mgr_tx: Sender<Msg>, mgr2cli_rx: Arc<Mutex<mpsc::Receiver<Msg>>>, proto: ProtoConfig, addr: Address) -> Self {
+    fn new(hid: i32, sid: i32, cid: i32, tid: i32, cli2mgr_tx: Sender<Msg>, mgr2cli_rx: Arc<Mutex<mpsc::Receiver<Msg>>>, proto: ProtoConfig, config: BTreeMap<String, String>) -> Self {
         Client {
-            base: TestEndBase::new(format!("CLI.h{}.s{}.c{}.t{}", hid, sid, cid, tid), cli2mgr_tx, mgr2cli_rx, proto, addr),
+            base: TestEndBase::new(format!("CLI.h{}.s{}.c{}.t{}", hid, sid, cid, tid), cli2mgr_tx, mgr2cli_rx, proto, config),
         }
     }
 
     fn connect_tcp_stream(&self, failed: &mut bool) -> Result<TcpStream, Error> {
-        let addr = format!("{}:{}", self.base.addr.ip, self.base.addr.port).parse().unwrap();
+        let addr = format!("{}:{}", self.base.ip, self.base.port).parse().unwrap();
 
         let mut tcp_stream_trials = 0;
         loop {
@@ -932,18 +1041,57 @@ impl Client {
 
         let mut ssl_stream_trials = 0;
         let ssl_stream_result: Result<SslStream<&TcpStream>, HandshakeError<&TcpStream>> = loop {
-            let mut scc = SslConnector::builder(SslMethod::tls()).expect("Cannot create SslConnector")
-                .build().configure().expect("Cannot create SSL ConnectConfiguration");
-            if !self.base.proto.verify_peer {
-                // Otherwise use defaults
+            let mut scb = SslConnector::builder(SslMethod::tls()).expect("Cannot create SslConnector");
+
+            if !self.base.proto.crt.is_empty() {
+                scb.set_certificate_file(&self.base.proto.crt, SslFiletype::PEM).expect("Cannot set crt file");
+            }
+            if !self.base.proto.key.is_empty() {
+                scb.set_private_key_file(&self.base.proto.key, SslFiletype::PEM).expect("Cannot set key file");
+            }
+
+            scb.set_cipher_list(&self.base.proto.ciphers).expect("Cannot set cipher list");
+
+            scb.set_min_proto_version(Some(str2sslversion(&self.base.proto.min_proto_version))).expect("Cannot set min proto version");
+            scb.set_max_proto_version(Some(str2sslversion(&self.base.proto.max_proto_version))).expect("Cannot set max proto version");
+
+            if self.base.proto.no_ssl2 {
+                scb.set_options(SslOptions::NO_SSLV2);
+            }
+            if self.base.proto.no_ssl3 {
+                scb.set_options(SslOptions::NO_SSLV3);
+            }
+            if self.base.proto.no_tls10 {
+                scb.set_options(SslOptions::NO_TLSV1);
+            }
+            if self.base.proto.no_tls11 {
+                scb.set_options(SslOptions::NO_TLSV1_1);
+            }
+            if self.base.proto.no_tls12 {
+                scb.set_options(SslOptions::NO_TLSV1_2);
+            }
+            if self.base.proto.no_tls13 {
+                scb.set_options(SslOptions::NO_TLSV1_3);
+            }
+            if !self.base.proto.compression {
+                scb.set_options(SslOptions::NO_COMPRESSION);
+            }
+
+            let ecdh = EcKey::from_curve_name(Nid::from_raw(ssl_nid_by_name(&self.base.proto.ecdhcurve))).expect("Cannot create EcKey");
+            // TODO: Check why the editor wants EcKeyRef, but the compiler is fine with &ecdh below
+            scb.set_tmp_ecdh(&ecdh).expect("Cannot set ecdh");
+
+            let mut scc = scb.build().configure().expect("Cannot create SSL ConnectConfiguration");
+            if self.base.proto.verify_peer {
+                scc.set_verify(SslVerifyMode::PEER);
+            } else {
                 scc.set_verify(SslVerifyMode::NONE);
             }
+
             if !self.base.proto.use_sni {
-                // Otherwise defaults to true
                 scc = scc.use_server_name_indication(false);
             }
             if !self.base.proto.verify_hostname {
-                // Otherwise defaults to true
                 scc = scc.verify_hostname(false);
             }
 
@@ -1031,7 +1179,8 @@ impl Client {
 
 struct TestEndBase {
     name: String,
-    addr: Address,
+    ip: String,
+    port: String,
     proto: ProtoConfig,
     tx: Sender<Msg>,
     rx: Arc<Mutex<mpsc::Receiver<Msg>>>,
@@ -1044,10 +1193,11 @@ struct TestEndBase {
 }
 
 impl TestEndBase {
-    fn new(name: String, tx: Sender<Msg>, rx: Arc<Mutex<mpsc::Receiver<Msg>>>, proto: ProtoConfig, addr: Address) -> Self {
-        TestEndBase {
+    fn new(name: String, tx: Sender<Msg>, rx: Arc<Mutex<mpsc::Receiver<Msg>>>, proto: ProtoConfig, config: BTreeMap<String, String>) -> Self {
+        let mut testend = TestEndBase {
             name,
-            addr,
+            ip: config["ip"].clone(),
+            port: config["port"].clone(),
             proto,
             tx,
             rx,
@@ -1057,6 +1207,102 @@ impl TestEndBase {
             recv_trials: 0,
             cmd_trials: 0,
             disconnect_detect_trials: 0,
+        };
+        testend.configure_proto(config);
+        testend
+    }
+
+    fn configure_proto(&mut self, config: BTreeMap<String, String>) {
+        if config.contains_key("proto") {
+            if config["proto"].eq("tcp") {
+                self.proto.proto = Proto::Tcp;
+            } else if config["proto"].eq("ssl") {
+                self.proto.proto = Proto::Ssl;
+            }
+        }
+
+        if config.contains_key("connect_timeout") {
+            self.proto.connect_timeout = config["connect_timeout"].parse().expect("Cannot parse connect_timeout");
+        }
+
+        if config.contains_key("read_timeout") {
+            self.proto.read_timeout = config["read_timeout"].parse().expect("Cannot parse read_timeout");
+        }
+
+        if config.contains_key("write_timeout") {
+            self.proto.write_timeout = config["write_timeout"].parse().expect("Cannot parse write_timeout");
+        }
+
+        if config.contains_key("ip_ttl") {
+            self.proto.ip_ttl = config["ip_ttl"].parse().expect("Cannot parse ip_ttl");
+        }
+
+        if config.contains_key("tcp_nodelay") {
+            self.proto.tcp_nodelay = config["tcp_nodelay"].eq("yes");
+        }
+
+        if config.contains_key("crt") {
+            self.proto.crt = config["crt"].clone();
+        }
+
+        if config.contains_key("key") {
+            self.proto.key = config["key"].clone();
+        }
+
+        if config.contains_key("verify_peer") {
+            self.proto.verify_peer = config["verify_peer"].eq("yes");
+        }
+
+        if config.contains_key("use_sni") {
+            self.proto.use_sni = config["use_sni"].eq("yes");
+        }
+
+        if config.contains_key("verify_hostname") {
+            self.proto.verify_hostname = config["verify_hostname"].eq("yes");
+        }
+
+        if config.contains_key("ciphers") {
+            self.proto.ciphers = config["ciphers"].clone();
+        }
+
+        if config.contains_key("min_proto_version") {
+            self.proto.min_proto_version = config["min_proto_version"].clone();
+        }
+
+        if config.contains_key("max_proto_version") {
+            self.proto.max_proto_version = config["max_proto_version"].clone();
+        }
+
+        if config.contains_key("no_ssl2") {
+            self.proto.no_ssl2 = config["no_ssl2"].eq("yes");
+        }
+
+        if config.contains_key("no_ssl3") {
+            self.proto.no_ssl3 = config["no_ssl3"].eq("yes");
+        }
+
+        if config.contains_key("no_tls10") {
+            self.proto.no_tls10 = config["no_tls10"].eq("yes");
+        }
+
+        if config.contains_key("no_tls11") {
+            self.proto.no_tls11 = config["no_tls11"].eq("yes");
+        }
+
+        if config.contains_key("no_tls12") {
+            self.proto.no_tls12 = config["no_tls12"].eq("yes");
+        }
+
+        if config.contains_key("no_tls13") {
+            self.proto.no_tls13 = config["no_tls13"].eq("yes");
+        }
+
+        if config.contains_key("compression") {
+            self.proto.compression = config["compression"].eq("yes");
+        }
+
+        if config.contains_key("ecdhcurve") {
+            self.proto.ecdhcurve = config["ecdhcurve"].clone();
         }
     }
 
@@ -1269,4 +1515,36 @@ impl TestEndBase {
         }
         Ok(())
     }
+}
+
+fn str2sslversion(s: &str) -> SslVersion {
+    match s {
+        "ssl3" => { SslVersion::SSL3 }
+        "tls10" => { SslVersion::TLS1 }
+        "tls11" => { SslVersion::TLS1_1 }
+        "tls12" => { SslVersion::TLS1_2 }
+        "tls13" => { SslVersion::TLS1_3 }
+        _ => { SslVersion::TLS1_2 } // XXX?
+    }
+}
+
+// TODO: Rust openssl lib does not have OBJ_sn2nid() equivalent, what is the best way to find nid by name?
+fn ssl_nid_by_name(s: &str) -> i32 {
+    let mut nid = 0; // UNDEF
+    for i in 0..1200 {
+        match Nid::from_raw(i).short_name() {
+            Ok(n) => {
+                if n == s {
+                    trace!("Found nid {} = {}", i, n);
+                    nid = i;
+                    break;
+                }
+                //trace!("Nid {} = {}", i, n);
+            }
+            Err(_) => {
+                //trace!("Undefined nid {}", i);
+            }
+        }
+    }
+    nid
 }
