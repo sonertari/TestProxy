@@ -40,8 +40,6 @@
       "client": {
         "ip": "127.0.0.1",
         "port": "8443",
-        "crt": "client.crt",
-        "key": "client.key",
         "ciphers": "MEDIUM",
         "use_sni": "yes",
         "verify_hostname": "yes",
@@ -104,7 +102,7 @@
         "1": {
           "testend": "client",
           "cmd": "send",
-          "payload": "GET / HTTP/1.1\r\nHost: comixwall.org\r\nSSLproxy: sslproxy\r\nSSLproxy: sslproxy\r\n\r\n"
+          "payload_file": "payload_http_get_two_extra_sslproxy_lines.txt"
         },
         "2": {
           "testend": "server",

@@ -26,10 +26,12 @@ extern crate time;
 
 use std::collections::BTreeMap;
 use std::fmt::{self, Display, Formatter};
+use std::fs;
 use std::fs::File;
 use std::io::{Error, Read, Write};
 use std::io::BufReader;
 use std::net::{Shutdown, TcpListener, TcpStream};
+use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
@@ -38,10 +40,11 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
-use openssl::ec::EcKey;
+use openssl::ec::{EcKey, EcKeyRef};
 use openssl::nid::Nid;
+use openssl::pkey::Params;
 use openssl::ssl::{HandshakeError, ShutdownState, SslAcceptor, SslConnector, SslFiletype, SslMethod, SslOptions, SslStream, SslVerifyMode, SslVersion};
-use serde::{Deserialize, Deserializer};
+use serde::{de, Deserialize, Deserializer};
 use structopt::StructOpt;
 
 use crate::config::Config;
@@ -84,7 +87,7 @@ struct TestState {
 #[derive(Deserialize, Debug)]
 struct Test {
     comment: String,
-    states: BTreeMap<i32, TestState>,
+    states: BTreeMap<i32, BTreeMap<String, String>>,
 }
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -171,14 +174,10 @@ impl Display for TestEnd {
     }
 }
 
-impl<'de> Deserialize<'de> for TestEnd {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-        where
-            D: Deserializer<'de>,
-    {
-        // TODO: Use deserializer.is_human_readable()
-        let s = String::deserialize(deserializer)?;
-        match s.as_str() {
+impl FromStr for TestEnd {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
             "server" => Ok(TestEnd::Server),
             "client" => Ok(TestEnd::Client),
             testend => {
@@ -186,6 +185,17 @@ impl<'de> Deserialize<'de> for TestEnd {
                 panic!("Testend not supported")
             }
         }
+    }
+}
+
+impl<'de> Deserialize<'de> for TestEnd {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: Deserializer<'de>,
+    {
+        // TODO: Use deserializer.is_human_readable()?
+        let s = String::deserialize(deserializer)?;
+        FromStr::from_str(&s).map_err(de::Error::custom)
     }
 }
 
@@ -212,13 +222,10 @@ impl Display for Command {
     }
 }
 
-impl<'de> Deserialize<'de> for Command {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-        where
-            D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        match s.as_str() {
+impl FromStr for Command {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
             "send" => Ok(Command::Send),
             "recv" => Ok(Command::Recv),
             "timeout" => Ok(Command::Timeout),
@@ -227,6 +234,16 @@ impl<'de> Deserialize<'de> for Command {
                 panic!("Command not supported")
             }
         }
+    }
+}
+
+impl<'de> Deserialize<'de> for Command {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        FromStr::from_str(&s).map_err(de::Error::custom)
     }
 }
 
@@ -493,11 +510,20 @@ impl Manager {
 
         // TODO: Use ref of states, do not clone?
         for (sid, state) in test.states.iter() {
-            let testend = state.testend.clone();
-            let cmd = state.cmd.clone();
-            let payload = state.payload.clone();
+            let testend = TestEnd::from_str(&state["testend"]).unwrap();
+            let cmd = Command::from_str(&state["cmd"]).unwrap();
 
-            trace!(target: &self.name, "teststate: {}: {}, {}, {}", sid, testend, cmd, payload);
+            let mut payload = "".to_string();
+            let mut payload_file = "".to_string();
+            // payload_file has precedence over payload, if both exist
+            if state.contains_key("payload_file") {
+                payload_file = state["payload_file"].clone();
+                payload = String::from_utf8_lossy(&fs::read(&payload_file).unwrap()).to_string();
+            } else if state.contains_key("payload") {
+                payload = state["payload"].clone();
+            }
+
+            trace!(target: &self.name, "teststate: {}: {}, {}, {}, {}", sid, testend, cmd, payload, payload_file);
 
             self.teststates.insert(sid.clone(), TestState { testend, cmd, payload });
             self.teststate_ids.insert(i, sid.clone());
@@ -812,8 +838,8 @@ impl Server {
         }
 
         let ecdh = EcKey::from_curve_name(Nid::from_raw(ssl_nid_by_name(&self.base.proto.ecdhcurve))).expect("Cannot create EcKey");
-        // TODO: Check why the editor wants EcKeyRef, but the compiler is fine with &ecdh below
-        sab.set_tmp_ecdh(&ecdh).expect("Cannot set ecdh");
+        // TODO: Is this the right way of typecasting to EcKeyRef, the compiler is fine with just &ecdh below, but the editor complains
+        sab.set_tmp_ecdh(&ecdh as &EcKeyRef<Params>).expect("Cannot set ecdh");
 
         let acceptor = sab.build();
 
@@ -1078,8 +1104,8 @@ impl Client {
             }
 
             let ecdh = EcKey::from_curve_name(Nid::from_raw(ssl_nid_by_name(&self.base.proto.ecdhcurve))).expect("Cannot create EcKey");
-            // TODO: Check why the editor wants EcKeyRef, but the compiler is fine with &ecdh below
-            scb.set_tmp_ecdh(&ecdh).expect("Cannot set ecdh");
+            // TODO: Is this the right way of typecasting to EcKeyRef, the compiler is fine with just &ecdh below, but the editor complains
+            scb.set_tmp_ecdh(&ecdh as &EcKeyRef<Params>).expect("Cannot set ecdh");
 
             let mut scc = scb.build().configure().expect("Cannot create SSL ConnectConfiguration");
             if self.base.proto.verify_peer {
