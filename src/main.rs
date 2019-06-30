@@ -88,7 +88,7 @@ struct TestState {
     testend: TestEnd,
     cmd: Command,
     payload: String,
-    assert: BTreeMap<String, String>,
+    assert: BTreeMap<String, BTreeMap<String, Vec<String>>>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -270,11 +270,11 @@ enum RecvMsgResult {
 struct Msg {
     cmd: Command,
     payload: String,
-    assert: BTreeMap<String, String>,
+    assert: BTreeMap<String, BTreeMap<String, Vec<String>>>,
 }
 
 impl Msg {
-    fn new(cmd: Command, payload: String, assert: BTreeMap<String, String>) -> Self {
+    fn new(cmd: Command, payload: String, assert: BTreeMap<String, BTreeMap<String, Vec<String>>>) -> Self {
         Msg { cmd, payload, assert }
     }
 
@@ -334,7 +334,7 @@ struct Manager {
     testend: TestEnd,
     cmd: Command,
     payload: String,
-    assert: BTreeMap<String, String>,
+    assert: BTreeMap<String, BTreeMap<String, Vec<String>>>,
     teststates: BTreeMap<i32, TestState>,
     teststate_ids: BTreeMap<i32, i32>,
     test_failed: bool,
@@ -538,7 +538,7 @@ impl Manager {
                 payload = state["payload"].as_str().unwrap().to_string();
             }
 
-            let mut assert: BTreeMap<String, String> = BTreeMap::new();
+            let mut assert: BTreeMap<String, BTreeMap<String, Vec<String>>> = BTreeMap::new();
             if state.get("assert") != None {
                 assert = serde_json::from_value(state["assert"].clone()).unwrap();
             }
@@ -606,10 +606,10 @@ impl Manager {
                             let mut assert_succeeded = true;
                             for k in self.assert.keys() {
                                 if msg.assert.contains_key(k) && self.assert[k] == msg.assert[k] {
-                                    debug!(target: &self.name, "Assertion succeeded for {} {}: {} == {}", testend, msg.cmd, k, msg.assert[k]);
+                                    debug!(target: &self.name, "Assertion succeeded for {} {}: {} == {:?}", testend, msg.cmd, k, msg.assert[k]);
                                 } else {
                                     assert_succeeded = false;
-                                    error!(target: &self.name, "Assertion failed for {} {}: {} == {} ({}), received: {} ({})",
+                                    error!(target: &self.name, "Assertion failed for {} {}: {} == {:?} ({}), received: {:?} ({})",
                                            testend, msg.cmd, k, self.assert[k], self.assert[k].len(), msg.assert[k], msg.assert[k].len());
                                     break;
                                 }
@@ -1247,7 +1247,7 @@ struct TestEndBase {
     rx: Arc<Mutex<mpsc::Receiver<Msg>>>,
     cmd: Command,
     payload: String,
-    assert: BTreeMap<String, String>,
+    assert: BTreeMap<String, BTreeMap<String, Vec<String>>>,
     recv_payload: String,
     recv_trials: i32,
     cmd_trials: i32,
@@ -1628,76 +1628,113 @@ impl TestEndBase {
                 //debug!(target: &self.name, "SSL stream peer_certificate serial_number: {:#?}", peer_cert.serial_number().to_bn().unwrap());
 
                 if self.assert.contains_key("peer_certificate") {
-                    if self.assert["peer_certificate"] != peer_certificate {
-                        error!(target: &self.name, "Assertion failed peer_certificate == {}, received: {}", self.assert["peer_certificate"], peer_certificate);
-                        self.assert.insert("peer_certificate".to_string(), peer_certificate);
-                        failed = true;
-                    }
+                    failed |= self.assert_str("peer_certificate", &peer_certificate);
                 }
                 if self.assert.contains_key("peer_certificate_not_before") {
-                    let not_before: &Asn1TimeRef = peer_cert.not_before();
-                    let now: &Asn1TimeRef = &Asn1Time::days_from_now(0).unwrap() as &Asn1TimeRef;
-
-                    let not_before = NaiveDateTime::parse_from_str(&not_before.to_string(), "%b %d %H:%M:%S %Y GMT").unwrap();
-                    let now = NaiveDateTime::parse_from_str(&now.to_string(), "%b %d %H:%M:%S %Y GMT").unwrap();
-                    let yesterday = now.checked_sub_signed(time::Duration::days(self.assert["peer_certificate_not_before"].parse().unwrap())).unwrap();
-
-                    // assert yesterday <= not_before <= now
-                    if yesterday > not_before || not_before > now {
-                        error!(target: &self.name, "Assertion failed peer_certificate_not_before: {} <= {}, >= {}", not_before, now, yesterday);
-                        self.assert.insert("peer_certificate_not_before".to_string(), "false".to_string());
-                        failed = true;
-                    }
+                    failed |= self.assert_date("peer_certificate_not_before", peer_cert.not_before());
                 }
                 if self.assert.contains_key("peer_certificate_not_after") {
-                    let not_after: &Asn1TimeRef = peer_cert.not_after();
-                    let now: &Asn1TimeRef = &Asn1Time::days_from_now(0).unwrap() as &Asn1TimeRef;
-
-                    let not_after = NaiveDateTime::parse_from_str(&not_after.to_string(), "%b %d %H:%M:%S %Y GMT").unwrap();
-                    let now = NaiveDateTime::parse_from_str(&now.to_string(), "%b %d %H:%M:%S %Y GMT").unwrap();
-                    let next_year = now.checked_add_signed(time::Duration::days(self.assert["peer_certificate_not_after"].parse().unwrap())).unwrap();
-                    let next_year_minus_2days = next_year.checked_sub_signed(time::Duration::days(2)).unwrap();
-
-                    // assert next_year_minus_2days <= not_after <= next_year
-                    if next_year_minus_2days > not_after || not_after > next_year {
-                        error!(target: &self.name, "Assertion failed peer_certificate_not_after: {} <= {}, >= {}", not_after, next_year, next_year_minus_2days);
-                        self.assert.insert("peer_certificate_not_after".to_string(), "false".to_string());
-                        failed = true;
-                    }
+                    failed |= self.assert_date("peer_certificate_not_after", peer_cert.not_after());
                 }
             }
             None => {}
         }
 
         if self.assert.contains_key("ssl_proto_version") {
-            if self.assert["ssl_proto_version"] != ssl.version_str().to_string() {
-                error!(target: &self.name, "Assertion failed ssl_proto_version == {}, received: {}", self.assert["ssl_proto_version"], ssl.version_str().to_string());
-                self.assert.insert("ssl_proto_version".to_string(), ssl.version_str().to_string());
-                failed = true;
-            }
+            failed |= self.assert_str("ssl_proto_version", ssl.version_str());
         }
         if self.assert.contains_key("current_cipher_name") {
-            if self.assert["current_cipher_name"] != cipher.name().to_string() {
-                error!(target: &self.name, "Assertion failed current_cipher_name == {}, received: {}", self.assert["current_cipher_name"], cipher.name().to_string());
-                self.assert.insert("current_cipher_name".to_string(), cipher.name().to_string());
-                failed = true;
-            }
+            failed |= self.assert_str("current_cipher_name", cipher.name());
         }
         if self.assert.contains_key("current_cipher_version") {
-            if self.assert["current_cipher_version"] != cipher.version().to_string() {
-                error!(target: &self.name, "Assertion failed current_cipher_version == {}, received: {}", self.assert["current_cipher_version"], cipher.version().to_string());
-                self.assert.insert("current_cipher_version".to_string(), cipher.version().to_string());
-                failed = true;
-            }
+            failed |= self.assert_str("current_cipher_version", cipher.version());
         }
         if self.assert.contains_key("ssl_state") {
-            if self.assert["ssl_state"] != ssl.state_string() {
-                error!(target: &self.name, "Assertion failed ssl_state == {}, received: {}", self.assert["ssl_state"], ssl.state_string());
-                self.assert.insert("ssl_state".to_string(), ssl.state_string().to_string());
-                failed = true;
-            }
+            failed |= self.assert_str("ssl_state", ssl.state_string());
         }
         failed
+    }
+
+    fn assert_str(&self, key: &str, value: &str) -> bool {
+        let mut rv = false;
+        for (o, vs) in self.assert[key].iter() {
+            match o.as_str() {
+                "==" => {
+                    let mut t = false;
+                    for v in vs.iter() {
+                        if v == value {
+                            t = true;
+                        } else {
+                            warn!(target: &self.name, "Assertion failed {} == {}, received: {}", key, v, value);
+                        }
+                    }
+                    if !t {
+                        error!(target: &self.name, "Assertion failed {}, received: {}", key, value);
+                        rv = true;
+                    }
+                }
+                "!=" => {
+                    let mut f = false;
+                    for v in vs.iter() {
+                        if v == value {
+                            f = true;
+                            warn!(target: &self.name, "Assertion failed {} != {}, received: {}", key, v, value);
+                        }
+                    }
+                    if f {
+                        error!(target: &self.name, "Assertion failed {}, received: {}", key, value);
+                        rv = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        rv
+    }
+
+    fn assert_date(&self, key: &str, value: &Asn1TimeRef) -> bool {
+        let mut rv = false;
+
+        let value = NaiveDateTime::parse_from_str(&value.to_string(), "%b %d %H:%M:%S %Y GMT").unwrap();
+
+        let now: &Asn1TimeRef = &Asn1Time::days_from_now(0).unwrap() as &Asn1TimeRef;
+        let now = NaiveDateTime::parse_from_str(&now.to_string(), "%b %d %H:%M:%S %Y GMT").unwrap();
+
+        for (o, vs) in self.assert[key].iter() {
+            match o.as_str() {
+                ">=" => {
+                    let mut f = false;
+                    for v in vs.iter() {
+                        // v can be negative
+                        let now_plus_days = now.checked_add_signed(time::Duration::days(v.parse().unwrap())).unwrap();
+                        if value < now_plus_days {
+                            f = true;
+                            warn!(target: &self.name, "Assertion failed {} >= {}, received: {}", key, now_plus_days, value);
+                        }
+                    }
+                    if f {
+                        error!(target: &self.name, "Assertion failed {}, received: {}", key, value);
+                        rv = true;
+                    }
+                }
+                "<=" => {
+                    let mut f = false;
+                    for v in vs.iter() {
+                        let now_plus_days = now.checked_add_signed(time::Duration::days(v.parse().unwrap())).unwrap();
+                        if value > now_plus_days {
+                            f = true;
+                            warn!(target: &self.name, "Assertion failed {} <= {}, received: {}", key, now_plus_days, value);
+                        }
+                    }
+                    if f {
+                        error!(target: &self.name, "Assertion failed {}, received: {}", key, value);
+                        rv = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        rv
     }
 }
 

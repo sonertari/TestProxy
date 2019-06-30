@@ -56,13 +56,59 @@
           "cmd": "send",
           "payload": "GET / HTTP/1.1\r\nHost: comixwall.org\r\n\r\n",
           "assert": {
-            "current_cipher_name": "DHE-RSA-SEED-SHA",
-            "current_cipher_version": "SSLv3",
-            "ssl_proto_version": "TLSv1",
-            "ssl_state": "SSLOK ",
-            "peer_certificate": "TR, Antalya, Serik, ComixWall, SSLproxy, comixwall.org, sonertari@gmail.com",
-            "peer_certificate_not_before": "2",
-            "peer_certificate_not_after": "365"
+            "current_cipher_name": {
+              "==": [
+                "DHE-RSA-SEED-SHA"
+              ],
+              "!=": [
+                "ECDHE-RSA-AES256-GCM-SHA384"
+              ]
+            },
+            "current_cipher_version": {
+              "==": [
+                "SSLv3",
+                "TLSv1"
+              ],
+              "!=": [
+                "TLSv1.1",
+                "TLSv1.2"
+              ]
+            },
+            "ssl_proto_version": {
+              "==": [
+                "TLSv1"
+              ],
+              "!=": [
+                "TLSv1.1",
+                "TLSv1.2"
+              ]
+            },
+            "ssl_state": {
+              "==": [
+                "SSLOK "
+              ]
+            },
+            "peer_certificate": {
+              "==": [
+                "TR, Antalya, Serik, ComixWall, SSLproxy, comixwall.org, sonertari@gmail.com"
+              ]
+            },
+            "peer_certificate_not_before": {
+              ">=": [
+                "-2"
+              ],
+              "<=": [
+                "0"
+              ]
+            },
+            "peer_certificate_not_after": {
+              ">=": [
+                "363"
+              ],
+              "<=": [
+                "365"
+              ]
+            }
           }
         },
         "2": {
@@ -70,10 +116,39 @@
           "cmd": "recv",
           "payload": "",
           "assert": {
-            "current_cipher_name": "ECDHE-RSA-AES256-GCM-SHA384",
-            "current_cipher_version": "TLSv1.2",
-            "ssl_proto_version": "TLSv1.2",
-            "ssl_state": "SSLOK "
+            "current_cipher_name": {
+              "==": [
+                "ECDHE-RSA-AES256-GCM-SHA384"
+              ],
+              "!=": [
+                "DHE-RSA-SEED-SHA"
+              ]
+            },
+            "current_cipher_version": {
+              "==": [
+                "TLSv1.2"
+              ],
+              "!=": [
+                "SSLv3",
+                "TLSv1",
+                "TLSv1.1"
+              ]
+            },
+            "ssl_proto_version": {
+              "==": [
+                "TLSv1.2"
+              ],
+              "!=": [
+                "SSLv3",
+                "TLSv1",
+                "TLSv1.1"
+              ]
+            },
+            "ssl_state": {
+              "==": [
+                "SSLOK "
+              ]
+            }
           }
         },
         "3": {
@@ -81,10 +156,39 @@
           "cmd": "recv",
           "payload": "GET / HTTP/1.1\r\nHost: comixwall.org\r\nConnection: close\r\n\r\n",
           "assert": {
-            "current_cipher_name": "ECDHE-RSA-AES256-GCM-SHA384",
-            "current_cipher_version": "TLSv1.2",
-            "ssl_proto_version": "TLSv1.2",
-            "ssl_state": "SSLOK "
+            "current_cipher_name": {
+              "==": [
+                "ECDHE-RSA-AES256-GCM-SHA384"
+              ],
+              "!=": [
+                "DHE-RSA-SEED-SHA"
+              ]
+            },
+            "current_cipher_version": {
+              "==": [
+                "TLSv1.2"
+              ],
+              "!=": [
+                "SSLv3",
+                "TLSv1",
+                "TLSv1.1"
+              ]
+            },
+            "ssl_proto_version": {
+              "==": [
+                "TLSv1.2"
+              ],
+              "!=": [
+                "SSLv3",
+                "TLSv1",
+                "TLSv1.1"
+              ]
+            },
+            "ssl_state": {
+              "==": [
+                "SSLOK "
+              ]
+            }
           }
         }
       }
