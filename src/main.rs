@@ -15,12 +15,15 @@
 // You should have received a copy of the GNU General Public License
 // along with TestProxy.  If not, see <http://www.gnu.org/licenses/>.
 
+extern crate chrono;
 extern crate colored;
+extern crate core;
 extern crate fern;
 #[macro_use]
 extern crate log;
 extern crate openssl;
 extern crate serde;
+extern crate serde_json;
 extern crate structopt;
 extern crate time;
 
@@ -40,11 +43,14 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
+use chrono::NaiveDateTime;
+use openssl::asn1::{Asn1Time, Asn1TimeRef};
 use openssl::ec::{EcKey, EcKeyRef};
 use openssl::nid::Nid;
 use openssl::pkey::Params;
-use openssl::ssl::{HandshakeError, ShutdownState, SslAcceptor, SslConnector, SslFiletype, SslMethod, SslOptions, SslStream, SslVerifyMode, SslVersion};
+use openssl::ssl::{HandshakeError, NameType, ShutdownState, SslAcceptor, SslConnector, SslFiletype, SslMethod, SslOptions, SslStream, SslVerifyMode, SslVersion};
 use serde::{de, Deserialize, Deserializer};
+use serde_json::Value;
 use structopt::StructOpt;
 
 use crate::config::Config;
@@ -82,11 +88,13 @@ struct TestState {
     testend: TestEnd,
     cmd: Command,
     payload: String,
+    assert: BTreeMap<String, String>,
 }
 
 #[derive(Deserialize, Debug)]
 struct Test {
     comment: String,
+    config: TestConfig,
     states: BTreeMap<i32, BTreeMap<String, String>>,
 }
 
@@ -142,7 +150,7 @@ struct TestConfig {
 struct TestSet {
     comment: String,
     configs: BTreeMap<i32, TestConfig>,
-    tests: BTreeMap<i32, Test>,
+    tests: BTreeMap<i32, Value>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -262,11 +270,16 @@ enum RecvMsgResult {
 struct Msg {
     cmd: Command,
     payload: String,
+    assert: BTreeMap<String, String>,
 }
 
 impl Msg {
-    fn new(cmd: Command, payload: String) -> Self {
-        Msg { cmd, payload }
+    fn new(cmd: Command, payload: String, assert: BTreeMap<String, String>) -> Self {
+        Msg { cmd, payload, assert }
+    }
+
+    fn from_cmd(cmd: Command) -> Self {
+        Msg { cmd, payload: "".to_string(), assert: BTreeMap::new() }
     }
 }
 
@@ -321,6 +334,7 @@ struct Manager {
     testend: TestEnd,
     cmd: Command,
     payload: String,
+    assert: BTreeMap<String, String>,
     teststates: BTreeMap<i32, TestState>,
     teststate_ids: BTreeMap<i32, i32>,
     test_failed: bool,
@@ -358,6 +372,7 @@ impl Manager {
             testend: TestEnd::None,
             cmd: Command::None,
             payload: "".to_string(),
+            assert: BTreeMap::new(),
             teststates: BTreeMap::new(),
             teststate_ids: BTreeMap::new(),
             test_failed: false,
@@ -500,7 +515,7 @@ impl Manager {
         }
     }
 
-    fn clone_test(&mut self, test: &Test) {
+    fn clone_test(&mut self, test: &Value) {
         self.teststates.clear();
         self.teststate_ids.clear();
         self.test_failed = false;
@@ -509,24 +524,29 @@ impl Manager {
         let mut i = self.state as i32;
 
         // TODO: Use ref of states, do not clone?
-        for (sid, state) in test.states.iter() {
-            let testend = TestEnd::from_str(&state["testend"]).unwrap();
-            let cmd = Command::from_str(&state["cmd"]).unwrap();
+        for (sid, state) in test["states"].as_object().unwrap().iter() {
+            let testend = TestEnd::from_str(&state["testend"].as_str().unwrap()).unwrap();
+            let cmd = Command::from_str(&state["cmd"].as_str().unwrap()).unwrap();
 
             let mut payload = "".to_string();
             let mut payload_file = "".to_string();
             // payload_file has precedence over payload, if both exist
-            if state.contains_key("payload_file") {
-                payload_file = state["payload_file"].clone();
+            if state.get("payload_file") != None {
+                payload_file = state["payload_file"].as_str().unwrap().to_string();
                 payload = String::from_utf8_lossy(&fs::read(&payload_file).unwrap()).to_string();
-            } else if state.contains_key("payload") {
-                payload = state["payload"].clone();
+            } else if state.get("payload") != None {
+                payload = state["payload"].as_str().unwrap().to_string();
             }
 
-            trace!(target: &self.name, "teststate: {}: {}, {}, {}, {}", sid, testend, cmd, payload, payload_file);
+            let mut assert: BTreeMap<String, String> = BTreeMap::new();
+            if state.get("assert") != None {
+                assert = serde_json::from_value(state["assert"].clone()).unwrap();
+            }
 
-            self.teststates.insert(sid.clone(), TestState { testend, cmd, payload });
-            self.teststate_ids.insert(i, sid.clone());
+            trace!(target: &self.name, "teststate: {}: {}, {}, {}, {} {:?}", sid, testend, cmd, payload, payload_file, assert);
+
+            self.teststates.insert(sid.parse().unwrap(), TestState { testend, cmd, payload, assert });
+            self.teststate_ids.insert(i, sid.parse().unwrap());
             i += 1;
         }
     }
@@ -550,13 +570,14 @@ impl Manager {
             self.testend = self.teststates[state].testend.clone();
             self.cmd = self.teststates[state].cmd.clone();
             self.payload = self.teststates[state].payload.clone();
+            self.assert = self.teststates[state].assert.clone();
 
-            trace!(target: &self.name, "Sending msg: {}, {}, {}", &self.testend, &self.cmd, &self.payload);
-            self.send_command(&self.testend, Msg::new(self.cmd.clone(), self.payload.clone()));
+            trace!(target: &self.name, "Sending msg: {}, {}, {}, {:?}", &self.testend, &self.cmd, &self.payload, &self.assert);
+            self.send_command(&self.testend, Msg::new(self.cmd.clone(), self.payload.clone(), self.assert.clone()));
             self.state += 1;
         } else {
-            self.mgr2srv_tx.send(Msg::new(Command::Quit, "".to_string())).unwrap();
-            self.mgr2cli_tx.send(Msg::new(Command::Quit, "".to_string())).unwrap();
+            self.mgr2srv_tx.send(Msg::from_cmd(Command::Quit)).unwrap();
+            self.mgr2cli_tx.send(Msg::from_cmd(Command::Quit)).unwrap();
             return SendCommandResult::TestFinished;
         }
         SendCommandResult::Success
@@ -582,7 +603,18 @@ impl Manager {
                     if self.cmd.eq(&msg.cmd) {
                         if self.payload.eq(&msg.payload) {
                             debug!(target: &self.name, "Payloads match for {} {}", testend, msg.cmd);
-                            test_succeeded = true;
+                            let mut assert_succeeded = true;
+                            for k in self.assert.keys() {
+                                if msg.assert.contains_key(k) && self.assert[k] == msg.assert[k] {
+                                    debug!(target: &self.name, "Assertion succeeded for {} {}: {} == {}", testend, msg.cmd, k, msg.assert[k]);
+                                } else {
+                                    assert_succeeded = false;
+                                    error!(target: &self.name, "Assertion failed for {} {}: {} == {} ({}), received: {} ({})",
+                                           testend, msg.cmd, k, self.assert[k], self.assert[k].len(), msg.assert[k], msg.assert[k].len());
+                                    break;
+                                }
+                            }
+                            test_succeeded = assert_succeeded;
                         } else {
                             self.test_failed = true;
                             error!(target: &self.name, "Payloads do NOT match for {} {}, expected payload({})= {}, received payload({})= {}",
@@ -636,7 +668,7 @@ impl Manager {
                         test_trials = 0;
                     }
                     RecvMsgResult::Quit => {
-                        self.send_command(&TestEnd::Client, Msg::new(Command::Quit, "".to_string()));
+                        self.send_command(&TestEnd::Client, Msg::from_cmd(Command::Quit));
                         exit = true;
                     }
                     RecvMsgResult::None => {}
@@ -649,7 +681,7 @@ impl Manager {
                         test_trials = 0;
                     }
                     RecvMsgResult::Quit => {
-                        self.send_command(&TestEnd::Server, Msg::new(Command::Quit, "".to_string()));
+                        self.send_command(&TestEnd::Server, Msg::from_cmd(Command::Quit));
                         exit = true;
                     }
                     RecvMsgResult::None => {}
@@ -682,7 +714,11 @@ impl Manager {
             warn!(target: &self.name, "Start test set {} for {} test config {}: {}", self.sid, proto.proto, cid, testset.comment);
 
             for (&tid, test) in testset.tests.iter() {
-                debug!(target: &self.name, "{}", test.comment);
+                let mut comment = "";
+                if test.get("comment") != None {
+                    comment = test["comment"].as_str().unwrap_or("");
+                    debug!(target: &self.name, "{}", comment);
+                }
 
                 let (cli2mgr_tx, cli2mgr_rx) = mpsc::channel();
                 self.cli2mgr_tx = cli2mgr_tx;
@@ -728,9 +764,9 @@ impl Manager {
                 }
 
                 if !self.test_failed && self.state == self.teststate_ids.len() {
-                    info!(target: &self.name, "Test {} succeeded: {}", tid, test.comment);
+                    info!(target: &self.name, "Test {} succeeded: {}", tid, comment);
                 } else {
-                    error!(target: &self.name, "Test {} failed: {}", tid, test.comment);
+                    error!(target: &self.name, "Test {} failed: {}", tid, comment);
                     break;
                 }
             }
@@ -893,7 +929,7 @@ impl Server {
                 if ss == ShutdownState::RECEIVED || ss == ShutdownState::SENT {
                     debug!(target: &self.base.name, "SSL stream shuts down");
                     if self.base.cmd == Command::Recv {
-                        if let Err(_) = self.base.report_recv_payload() {
+                        if let Err(_) = self.base.report_cmd_result(Some(&mut ssl_stream)) {
                             break true;
                         }
                     }
@@ -960,8 +996,7 @@ impl Server {
                     if self.base.cmd == Command::Timeout {
                         if tcp_stream_trials >= MAX_CONNECT_TIMEOUT_TRIALS {
                             debug!(target: &self.base.name, "Timeout command succeeded");
-                            self.base.tx.send(Msg::new(Command::Timeout, "".to_string())).unwrap();
-                            self.base.reset_command();
+                            self.base.report_cmd_result(None).unwrap_or(());
                             tcp_stream_trials = 0;
                         }
                     } else if tcp_stream_trials >= MAX_STREAM_CONNECT_TRIALS {
@@ -995,7 +1030,7 @@ impl Server {
         }
 
         if failed {
-            self.base.tx.send(Msg::new(Command::Fail, "".to_string())).unwrap();
+            self.base.tx.send(Msg::from_cmd(Command::Fail)).unwrap();
         }
         debug!(target: &self.base.name, "Return {}", failed);
         failed
@@ -1167,7 +1202,7 @@ impl Client {
                 if ss == ShutdownState::RECEIVED || ss == ShutdownState::SENT {
                     debug!(target: &self.base.name, "SSL stream shuts down");
                     if self.base.cmd == Command::Recv {
-                        if let Err(_) = self.base.report_recv_payload() { failed = true; }
+                        if let Err(_) = self.base.report_cmd_result(Some(&mut ssl_stream)) { failed = true; }
                     }
                     break;
                 }
@@ -1196,7 +1231,7 @@ impl Client {
         }
 
         if failed {
-            self.base.tx.send(Msg::new(Command::Fail, "".to_string())).unwrap();
+            self.base.tx.send(Msg::from_cmd(Command::Fail)).unwrap();
         }
         debug!(target: &self.base.name, "Return {}", failed);
         failed
@@ -1212,6 +1247,7 @@ struct TestEndBase {
     rx: Arc<Mutex<mpsc::Receiver<Msg>>>,
     cmd: Command,
     payload: String,
+    assert: BTreeMap<String, String>,
     recv_payload: String,
     recv_trials: i32,
     cmd_trials: i32,
@@ -1229,6 +1265,7 @@ impl TestEndBase {
             rx,
             cmd: Command::None,
             payload: "".to_string(),
+            assert: BTreeMap::new(),
             recv_payload: "".to_string(),
             recv_trials: 0,
             cmd_trials: 0,
@@ -1346,6 +1383,7 @@ impl TestEndBase {
     fn reset_command(&mut self) {
         self.cmd = Command::None;
         self.payload.clear();
+        self.assert.clear();
         self.recv_payload.clear();
         self.recv_trials = 0;
         self.cmd_trials = 0;
@@ -1357,8 +1395,9 @@ impl TestEndBase {
             Ok(msg) => {
                 self.cmd = msg.cmd;
                 self.payload = msg.payload;
+                self.assert = msg.assert;
                 self.cmd_trials = 0;
-                debug!(target: &self.name, "Msg from mgr ({}): ({}, {})", self.payload.len(), self.cmd, self.payload);
+                debug!(target: &self.name, "Msg from mgr ({}): ({}, {}, {:?})", self.payload.len(), self.cmd, self.payload, self.assert);
             }
             Err(e) => {
                 if e != RecvTimeoutError::Timeout {
@@ -1370,21 +1409,34 @@ impl TestEndBase {
         Ok(())
     }
 
-    fn report_recv_payload(&mut self) -> Result<(), ()> {
+    // TODO: Should all tx's use this function?
+    fn report_cmd_result(&mut self, ssl_stream: Option<&mut SslStream<&TcpStream>>) -> Result<(), ()> {
         let mut rv = Ok(());
 
-        if !self.payload.eq(&self.recv_payload) {
-            debug!(target: &self.name, "Payloads do NOT match for {}, payload({})= {}, recv_payload({})= {}",
-                   self.cmd, self.payload.len(), self.payload, self.recv_payload.len(), self.recv_payload);
-            rv = Err(());
+        if let Some(ssl_stream) = ssl_stream {
+            if self.assert_ssl_config(ssl_stream) {
+                rv = Err(());
+            }
         }
 
-        self.tx.send(Msg::new(Command::Recv, self.recv_payload.clone())).unwrap();
+        let payload;
+        if self.cmd == Command::Recv {
+            if !self.payload.eq(&self.recv_payload) {
+                debug!(target: &self.name, "Payloads do NOT match for {}, payload({})= {}, recv_payload({})= {}",
+                       self.cmd, self.payload.len(), self.payload, self.recv_payload.len(), self.recv_payload);
+                rv = Err(());
+            }
+            payload = self.recv_payload.clone();
+        } else {
+            payload = self.payload.clone();
+        }
+
+        self.tx.send(Msg::new(self.cmd.clone(), payload, self.assert.clone())).unwrap();
         self.reset_command();
         rv
     }
 
-    fn process_recv_payload(&mut self) -> Result<(), ()> {
+    fn process_recv_payload(&mut self, ssl_stream: Option<&mut SslStream<&TcpStream>>) -> Result<(), ()> {
         self.recv_trials += 1;
         // ATTENTION: Wait for any extra data even after payload matches exactly, because the proxy should not send anything else
         if (self.payload.starts_with(&self.recv_payload) || self.recv_payload.is_empty()) &&
@@ -1394,7 +1446,7 @@ impl TestEndBase {
         }
 
         trace!(target: &self.name, "Reporting after recv trial {} ({}): {}", self.recv_trials, self.recv_payload.len(), self.recv_payload);
-        self.report_recv_payload()
+        self.report_cmd_result(ssl_stream)
     }
 
     // TODO: Can we improve code reuse with execute_tcp_command()?
@@ -1407,8 +1459,9 @@ impl TestEndBase {
                         if self.payload.len() == n {
                             match ssl_stream.flush() {
                                 Ok(()) => {
-                                    self.tx.send(Msg::new(Command::Send, self.payload.clone())).unwrap();
-                                    self.reset_command();
+                                    if let Err(_) = self.report_cmd_result(Some(ssl_stream)) {
+                                        return Err(CmdExecResult::Fail);
+                                    }
                                     return Ok(());
                                 }
                                 Err(e) => {
@@ -1423,8 +1476,8 @@ impl TestEndBase {
                         error!(target: &self.name, "SSL stream write error: {}", e.to_string());
                     }
                 }
-                self.tx.send(Msg::new(Command::Send, "".to_string())).unwrap();
-                self.reset_command();
+                self.payload = "".to_string();
+                self.report_cmd_result(Some(ssl_stream)).unwrap_or(());
                 return Err(CmdExecResult::Fail);
             }
             Command::Recv => {
@@ -1441,7 +1494,7 @@ impl TestEndBase {
                         debug!(target: &self.name, "SSL stream read error: {}", e.to_string());
                     }
                 }
-                if let Err(_) = self.process_recv_payload() {
+                if let Err(_) = self.process_recv_payload(Some(ssl_stream)) {
                     return Err(CmdExecResult::Fail);
                 }
             }
@@ -1471,8 +1524,9 @@ impl TestEndBase {
                         if self.payload.len() == n {
                             match tcp_stream.flush() {
                                 Ok(()) => {
-                                    self.tx.send(Msg::new(Command::Send, self.payload.clone())).unwrap();
-                                    self.reset_command();
+                                    if let Err(_) = self.report_cmd_result(None) {
+                                        return Err(CmdExecResult::Fail);
+                                    }
                                     return Ok(());
                                 }
                                 Err(e) => {
@@ -1487,8 +1541,8 @@ impl TestEndBase {
                         error!(target: &self.name, "TCP stream write error: {}", e.to_string());
                     }
                 }
-                self.tx.send(Msg::new(Command::Send, "".to_string())).unwrap();
-                self.reset_command();
+                self.payload = "".to_string();
+                self.report_cmd_result(None).unwrap_or(());
                 return Err(CmdExecResult::Fail);
             }
             Command::Recv => {
@@ -1505,7 +1559,7 @@ impl TestEndBase {
                                 debug!(target: &self.name, "TCP stream read DISCONNECT detected");
                                 self.recv_payload.push_str(recv);
 
-                                if let Err(_) = self.report_recv_payload() {
+                                if let Err(_) = self.report_cmd_result(None) {
                                     return Err(CmdExecResult::Fail);
                                 }
                                 return Err(CmdExecResult::Disconnect);
@@ -1521,7 +1575,7 @@ impl TestEndBase {
                         debug!(target: &self.name, "TCP stream read error: {}", e.to_string());
                     }
                 }
-                if let Err(_) = self.process_recv_payload() {
+                if let Err(_) = self.process_recv_payload(None) {
                     return Err(CmdExecResult::Fail);
                 }
             }
@@ -1540,6 +1594,110 @@ impl TestEndBase {
             Command::None => {}
         }
         Ok(())
+    }
+
+    fn assert_ssl_config(&mut self, ssl_stream: &mut SslStream<&TcpStream>) -> bool {
+        if self.assert.is_empty() {
+            return false;
+        }
+
+        let mut failed = false;
+
+        let ssl = ssl_stream.ssl();
+        let cipher = ssl.current_cipher().unwrap();
+        debug!(target: &self.name, "SSL stream current_cipher name: {}, standard_name: {}, version: {}, cipher_nid: {:?}", cipher.name(), cipher.standard_name().unwrap(), cipher.version(), cipher.cipher_nid().unwrap());
+        debug!(target: &self.name, "SSL stream current_cipher description: {}", cipher.description());
+        debug!(target: &self.name, "SSL stream version_str {}", ssl.version_str());
+        debug!(target: &self.name, "SSL stream state_string {}", ssl.state_string());
+        //debug!(target: &self.name, "SSL stream state_string_long {}", ssl.state_string_long());
+        // SNI sent by client
+        debug!(target: &self.name, "SSL stream servername {}", ssl.servername(NameType::HOST_NAME).unwrap());
+        //debug!(target: &self.name, "SSL stream time: {:#?}, timeout: {:#?}", ssl.session().unwrap().time(), ssl.session().unwrap().timeout());
+
+        match ssl.peer_certificate() {
+            Some(peer_cert) => {
+                let mut pcv = Vec::new();
+                // TODO: Check why all peer.cert entry methods give the same entries
+                for e in peer_cert.issuer_name().entries() {
+                    pcv.push(format!("{}", &e.data().as_utf8().unwrap()));
+                }
+                let peer_certificate = pcv.join(", ");
+                debug!(target: &self.name, "SSL stream peer_certificate: {}", peer_certificate);
+                debug!(target: &self.name, "SSL stream peer_certificate not_before: {}", peer_cert.not_before());
+                debug!(target: &self.name, "SSL stream peer_certificate not_after: {}", peer_cert.not_after());
+                //debug!(target: &self.name, "SSL stream peer_certificate serial_number: {:#?}", peer_cert.serial_number().to_bn().unwrap());
+
+                if self.assert.contains_key("peer_certificate") {
+                    if self.assert["peer_certificate"] != peer_certificate {
+                        error!(target: &self.name, "Assertion failed peer_certificate == {}, received: {}", self.assert["peer_certificate"], peer_certificate);
+                        self.assert.insert("peer_certificate".to_string(), peer_certificate);
+                        failed = true;
+                    }
+                }
+                if self.assert.contains_key("peer_certificate_not_before") {
+                    let not_before: &Asn1TimeRef = peer_cert.not_before();
+                    let now: &Asn1TimeRef = &Asn1Time::days_from_now(0).unwrap() as &Asn1TimeRef;
+
+                    let not_before = NaiveDateTime::parse_from_str(&not_before.to_string(), "%b %d %H:%M:%S %Y GMT").unwrap();
+                    let now = NaiveDateTime::parse_from_str(&now.to_string(), "%b %d %H:%M:%S %Y GMT").unwrap();
+                    let yesterday = now.checked_sub_signed(time::Duration::days(self.assert["peer_certificate_not_before"].parse().unwrap())).unwrap();
+
+                    // assert yesterday <= not_before <= now
+                    if yesterday > not_before || not_before > now {
+                        error!(target: &self.name, "Assertion failed peer_certificate_not_before: {} <= {}, >= {}", not_before, now, yesterday);
+                        self.assert.insert("peer_certificate_not_before".to_string(), "false".to_string());
+                        failed = true;
+                    }
+                }
+                if self.assert.contains_key("peer_certificate_not_after") {
+                    let not_after: &Asn1TimeRef = peer_cert.not_after();
+                    let now: &Asn1TimeRef = &Asn1Time::days_from_now(0).unwrap() as &Asn1TimeRef;
+
+                    let not_after = NaiveDateTime::parse_from_str(&not_after.to_string(), "%b %d %H:%M:%S %Y GMT").unwrap();
+                    let now = NaiveDateTime::parse_from_str(&now.to_string(), "%b %d %H:%M:%S %Y GMT").unwrap();
+                    let next_year = now.checked_add_signed(time::Duration::days(self.assert["peer_certificate_not_after"].parse().unwrap())).unwrap();
+                    let next_year_minus_2days = next_year.checked_sub_signed(time::Duration::days(2)).unwrap();
+
+                    // assert next_year_minus_2days <= not_after <= next_year
+                    if next_year_minus_2days > not_after || not_after > next_year {
+                        error!(target: &self.name, "Assertion failed peer_certificate_not_after: {} <= {}, >= {}", not_after, next_year, next_year_minus_2days);
+                        self.assert.insert("peer_certificate_not_after".to_string(), "false".to_string());
+                        failed = true;
+                    }
+                }
+            }
+            None => {}
+        }
+
+        if self.assert.contains_key("ssl_proto_version") {
+            if self.assert["ssl_proto_version"] != ssl.version_str().to_string() {
+                error!(target: &self.name, "Assertion failed ssl_proto_version == {}, received: {}", self.assert["ssl_proto_version"], ssl.version_str().to_string());
+                self.assert.insert("ssl_proto_version".to_string(), ssl.version_str().to_string());
+                failed = true;
+            }
+        }
+        if self.assert.contains_key("current_cipher_name") {
+            if self.assert["current_cipher_name"] != cipher.name().to_string() {
+                error!(target: &self.name, "Assertion failed current_cipher_name == {}, received: {}", self.assert["current_cipher_name"], cipher.name().to_string());
+                self.assert.insert("current_cipher_name".to_string(), cipher.name().to_string());
+                failed = true;
+            }
+        }
+        if self.assert.contains_key("current_cipher_version") {
+            if self.assert["current_cipher_version"] != cipher.version().to_string() {
+                error!(target: &self.name, "Assertion failed current_cipher_version == {}, received: {}", self.assert["current_cipher_version"], cipher.version().to_string());
+                self.assert.insert("current_cipher_version".to_string(), cipher.version().to_string());
+                failed = true;
+            }
+        }
+        if self.assert.contains_key("ssl_state") {
+            if self.assert["ssl_state"] != ssl.state_string() {
+                error!(target: &self.name, "Assertion failed ssl_state == {}, received: {}", self.assert["ssl_state"], ssl.state_string());
+                self.assert.insert("ssl_state".to_string(), ssl.state_string().to_string());
+                failed = true;
+            }
+        }
+        failed
     }
 }
 

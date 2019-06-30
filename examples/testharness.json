@@ -7,6 +7,12 @@
         "1": "http_testset_1.json",
         "2": "http_testset_2.json"
       }
+    },
+    "2": {
+      "comment": "SSL config tests",
+      "testsets": {
+        "1": "ssl_testset_1.json"
+      }
     }
   }
 }
