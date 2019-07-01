@@ -22,6 +22,7 @@ extern crate fern;
 #[macro_use]
 extern crate log;
 extern crate openssl;
+extern crate regex;
 extern crate serde;
 extern crate serde_json;
 extern crate structopt;
@@ -49,6 +50,7 @@ use openssl::ec::{EcKey, EcKeyRef};
 use openssl::nid::Nid;
 use openssl::pkey::Params;
 use openssl::ssl::{HandshakeError, NameType, ShutdownState, SslAcceptor, SslConnector, SslFiletype, SslMethod, SslOptions, SslStream, SslVerifyMode, SslVersion};
+use regex::Regex;
 use serde::{de, Deserialize, Deserializer};
 use serde_json::Value;
 use structopt::StructOpt;
@@ -83,12 +85,14 @@ const MAX_TEST_TRIALS: i32 = MAX_CONNECT_TIMEOUT_TRIALS * 10;
 
 const BUF_SIZE: usize = 16384;
 
+type Assertion = BTreeMap<String, Vec<String>>;
+
 #[derive(Deserialize, Debug)]
 struct TestState {
     testend: TestEnd,
     cmd: Command,
     payload: String,
-    assert: BTreeMap<String, BTreeMap<String, Vec<String>>>,
+    assert: BTreeMap<String, Assertion>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -270,11 +274,11 @@ enum RecvMsgResult {
 struct Msg {
     cmd: Command,
     payload: String,
-    assert: BTreeMap<String, BTreeMap<String, Vec<String>>>,
+    assert: BTreeMap<String, Assertion>,
 }
 
 impl Msg {
-    fn new(cmd: Command, payload: String, assert: BTreeMap<String, BTreeMap<String, Vec<String>>>) -> Self {
+    fn new(cmd: Command, payload: String, assert: BTreeMap<String, Assertion>) -> Self {
         Msg { cmd, payload, assert }
     }
 
@@ -334,7 +338,7 @@ struct Manager {
     testend: TestEnd,
     cmd: Command,
     payload: String,
-    assert: BTreeMap<String, BTreeMap<String, Vec<String>>>,
+    assert: BTreeMap<String, Assertion>,
     teststates: BTreeMap<i32, TestState>,
     teststate_ids: BTreeMap<i32, i32>,
     test_failed: bool,
@@ -538,7 +542,7 @@ impl Manager {
                 payload = state["payload"].as_str().unwrap().to_string();
             }
 
-            let mut assert: BTreeMap<String, BTreeMap<String, Vec<String>>> = BTreeMap::new();
+            let mut assert: BTreeMap<String, Assertion> = BTreeMap::new();
             if state.get("assert") != None {
                 assert = serde_json::from_value(state["assert"].clone()).unwrap();
             }
@@ -603,18 +607,12 @@ impl Manager {
                     if self.cmd.eq(&msg.cmd) {
                         if self.payload.eq(&msg.payload) {
                             debug!(target: &self.name, "Payloads match for {} {}", testend, msg.cmd);
-                            let mut assert_succeeded = true;
-                            for k in self.assert.keys() {
-                                if msg.assert.contains_key(k) && self.assert[k] == msg.assert[k] {
-                                    debug!(target: &self.name, "Assertion succeeded for {} {}: {} == {:?}", testend, msg.cmd, k, msg.assert[k]);
-                                } else {
-                                    assert_succeeded = false;
-                                    error!(target: &self.name, "Assertion failed for {} {}: {} == {:?} ({}), received: {:?} ({})",
-                                           testend, msg.cmd, k, self.assert[k], self.assert[k].len(), msg.assert[k], msg.assert[k].len());
-                                    break;
-                                }
+                            test_succeeded = self.assert == msg.assert;
+                            if test_succeeded {
+                                debug!(target: &self.name, "Assertion succeeded for {} {}", testend, msg.cmd);
+                            } else {
+                                error!(target: &self.name, "Assertion failed for {} {}", testend, msg.cmd);
                             }
-                            test_succeeded = assert_succeeded;
                         } else {
                             self.test_failed = true;
                             error!(target: &self.name, "Payloads do NOT match for {} {}, expected payload({})= {}, received payload({})= {}",
@@ -1247,7 +1245,7 @@ struct TestEndBase {
     rx: Arc<Mutex<mpsc::Receiver<Msg>>>,
     cmd: Command,
     payload: String,
-    assert: BTreeMap<String, BTreeMap<String, Vec<String>>>,
+    assert: BTreeMap<String, Assertion>,
     recv_payload: String,
     recv_trials: i32,
     cmd_trials: i32,
@@ -1415,6 +1413,8 @@ impl TestEndBase {
 
         if let Some(ssl_stream) = ssl_stream {
             if self.assert_ssl_config(ssl_stream) {
+                // Signal assertion failure to mgr by clearing all assertions
+                self.assert.clear();
                 rv = Err(());
             }
         }
@@ -1658,35 +1658,48 @@ impl TestEndBase {
     fn assert_str(&self, key: &str, value: &str) -> bool {
         let mut rv = false;
         for (o, vs) in self.assert[key].iter() {
+            let mut failed = false;
             match o.as_str() {
                 "==" => {
-                    let mut t = false;
+                    // Only one match is enough
+                    failed = true;
                     for v in vs.iter() {
                         if v == value {
-                            t = true;
+                            failed = false;
                         } else {
                             warn!(target: &self.name, "Assertion failed {} == {}, received: {}", key, v, value);
                         }
                     }
-                    if !t {
-                        error!(target: &self.name, "Assertion failed {}, received: {}", key, value);
-                        rv = true;
-                    }
                 }
                 "!=" => {
-                    let mut f = false;
                     for v in vs.iter() {
                         if v == value {
-                            f = true;
+                            failed = true;
                             warn!(target: &self.name, "Assertion failed {} != {}, received: {}", key, v, value);
                         }
                     }
-                    if f {
-                        error!(target: &self.name, "Assertion failed {}, received: {}", key, value);
-                        rv = true;
+                }
+                "match" => {
+                    for v in vs.iter() {
+                        if !Regex::new(v).unwrap().is_match(value) {
+                            failed = true;
+                            warn!(target: &self.name, "Assertion failed {} match {}, received: {}", key, v, value);
+                        }
+                    }
+                }
+                "!match" => {
+                    for v in vs.iter() {
+                        if Regex::new(v).unwrap().is_match(value) {
+                            failed = true;
+                            warn!(target: &self.name, "Assertion failed {} !match {}, received: {}", key, v, value);
+                        }
                     }
                 }
                 _ => {}
+            }
+            if failed {
+                error!(target: &self.name, "Assertion failed {}, received: {}", key, value);
+                rv = true;
             }
         }
         rv
@@ -1701,37 +1714,32 @@ impl TestEndBase {
         let now = NaiveDateTime::parse_from_str(&now.to_string(), "%b %d %H:%M:%S %Y GMT").unwrap();
 
         for (o, vs) in self.assert[key].iter() {
+            let mut failed = false;
             match o.as_str() {
                 ">=" => {
-                    let mut f = false;
                     for v in vs.iter() {
                         // v can be negative
                         let now_plus_days = now.checked_add_signed(time::Duration::days(v.parse().unwrap())).unwrap();
                         if value < now_plus_days {
-                            f = true;
+                            failed = true;
                             warn!(target: &self.name, "Assertion failed {} >= {}, received: {}", key, now_plus_days, value);
                         }
                     }
-                    if f {
-                        error!(target: &self.name, "Assertion failed {}, received: {}", key, value);
-                        rv = true;
-                    }
                 }
                 "<=" => {
-                    let mut f = false;
                     for v in vs.iter() {
                         let now_plus_days = now.checked_add_signed(time::Duration::days(v.parse().unwrap())).unwrap();
                         if value > now_plus_days {
-                            f = true;
+                            failed = true;
                             warn!(target: &self.name, "Assertion failed {} <= {}, received: {}", key, now_plus_days, value);
                         }
                     }
-                    if f {
-                        error!(target: &self.name, "Assertion failed {}, received: {}", key, value);
-                        rv = true;
-                    }
                 }
                 _ => {}
+            }
+            if failed {
+                error!(target: &self.name, "Assertion failed {}, received: {}", key, value);
+                rv = true;
             }
         }
         rv
