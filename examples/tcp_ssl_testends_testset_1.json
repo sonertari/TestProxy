@@ -1,0 +1,39 @@
+{
+  "comment": "Tests for incompatible protocol use",
+  "configs": {
+    "1": {
+      "proto": {
+        "comment": "Test config should always have the proto key"
+      },
+      "client": {
+        "proto": "tcp",
+        "ip": "127.0.0.1",
+        "port": "8444"
+      },
+      "server": {
+        "proto": "ssl",
+        "ip": "127.0.0.1",
+        "port": "9444",
+        "crt": "server.crt",
+        "key": "server.key"
+      }
+    }
+  },
+  "tests": {
+    "1": {
+      "comment": "Does not pass tcp connection over ssl proxyspec",
+      "states": {
+        "1": {
+          "testend": "client",
+          "cmd": "send",
+          "payload": "GET / HTTP/1.1\r\nHost: comixwall.org\r\n\r\n"
+        },
+        "2": {
+          "testend": "server",
+          "cmd": "timeout",
+          "payload": ""
+        }
+      }
+    }
+  }
+}

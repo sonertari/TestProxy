@@ -215,6 +215,7 @@ impl<'de> Deserialize<'de> for TestEnd {
 enum Command {
     Send,
     Recv,
+    SslConnectFail,
     Timeout,
     Quit,
     Fail,
@@ -226,6 +227,7 @@ impl Display for Command {
         match self {
             Command::Send => write!(fmt, "send"),
             Command::Recv => write!(fmt, "recv"),
+            Command::SslConnectFail => write!(fmt, "sslconnectfail"),
             Command::Timeout => write!(fmt, "timeout"),
             Command::Quit => write!(fmt, "quit"),
             Command::Fail => write!(fmt, "fail"),
@@ -240,6 +242,7 @@ impl FromStr for Command {
         match s {
             "send" => Ok(Command::Send),
             "recv" => Ok(Command::Recv),
+            "sslconnectfail" => Ok(Command::SslConnectFail),
             "timeout" => Ok(Command::Timeout),
             cmd => {
                 error!("Command not supported: {}", cmd);
@@ -441,7 +444,7 @@ impl Manager {
         // TODO: Check why no other ecdh curve works
         let mut ecdhcurve = "prime256v1".to_string();
 
-        if testconfig.proto["proto"].eq("ssl") {
+        if testconfig.proto.contains_key("proto") && testconfig.proto["proto"].eq("ssl") {
             proto = Proto::Ssl;
 
             if testconfig.proto.contains_key("crt") {
@@ -608,10 +611,12 @@ impl Manager {
                         if self.payload.eq(&msg.payload) {
                             debug!(target: &self.name, "Payloads match for {} {}", testend, msg.cmd);
                             test_succeeded = self.assert == msg.assert;
-                            if test_succeeded {
-                                debug!(target: &self.name, "Assertion succeeded for {} {}", testend, msg.cmd);
-                            } else {
-                                error!(target: &self.name, "Assertion failed for {} {}", testend, msg.cmd);
+                            if !self.assert.is_empty() {
+                                if test_succeeded {
+                                    debug!(target: &self.name, "Assertion succeeded for {} {}", testend, msg.cmd);
+                                } else {
+                                    error!(target: &self.name, "Assertion failed for {} {}", testend, msg.cmd);
+                                }
                             }
                         } else {
                             self.test_failed = true;
@@ -709,7 +714,7 @@ impl Manager {
             self.name = self.name(cid);
 
             let proto = self.configure_proto(&testconfig);
-            warn!(target: &self.name, "Start test set {} for {} test config {}: {}", self.sid, proto.proto, cid, testset.comment);
+            warn!(target: &self.name, "Start test set {} for test config {}: {}", self.sid, cid, testset.comment);
 
             for (&tid, test) in testset.tests.iter() {
                 let mut comment = "";
@@ -888,7 +893,7 @@ impl Server {
                     ssl_stream_trials += 1;
                     debug!(target: &self.base.name, "SSL stream connect HandshakeError ({}): {}", ssl_stream_trials, e);
                     if ssl_stream_trials >= MAX_STREAM_CONNECT_TRIALS {
-                        error!(target: &self.base.name, "SSL stream connect timed out");
+                        warn!(target: &self.base.name, "SSL stream connect timed out");
                         *failed = true;
                         break Err(e);
                     }
@@ -1099,7 +1104,27 @@ impl Client {
         let mut failed = false;
 
         let mut ssl_stream_trials = 0;
-        let ssl_stream_result: Result<SslStream<&TcpStream>, HandshakeError<&TcpStream>> = loop {
+        let mut ssl_stream_result: Result<SslStream<&TcpStream>, ()> = Err(());
+        loop {
+            if let Err(RecvTimeoutError::Disconnected) = self.base.get_command() {
+                break;
+            }
+
+            if self.base.cmd == Command::None {
+                self.base.cmd_trials += 1;
+                trace!(target: &self.base.name, "SSL stream connect loop cmd trial {}", self.base.cmd_trials);
+                if self.base.cmd_trials > MAX_CMD_TRIALS {
+                    error!(target: &self.base.name, "SSL stream connect loop timed out");
+                    failed = true;
+                    break;
+                }
+            }
+            if self.base.cmd == Command::Quit {
+                debug!(target: &self.base.name, "Received quit command");
+                self.base.reset_command();
+                break;
+            }
+
             let mut scb = SslConnector::builder(SslMethod::tls()).expect("Cannot create SslConnector");
 
             if !self.base.proto.crt.is_empty() {
@@ -1157,15 +1182,28 @@ impl Client {
             match scc.connect("localhost", tcp_stream) {
                 Ok(ssl_stream) => {
                     debug!(target: &self.base.name, "SSL stream connected");
-                    break Ok(ssl_stream);
+                    if self.base.cmd == Command::SslConnectFail {
+                        debug!(target: &self.base.name, "SslConnectFail command failed");
+                        self.base.reset_command();
+                        failed = true;
+                    } else {
+                        ssl_stream_result = Ok(ssl_stream);
+                    }
+                    break;
                 }
                 Err(e) => {
                     ssl_stream_trials += 1;
                     debug!(target: &self.base.name, "SSL stream error ({}): {}", ssl_stream_trials, e);
                     if ssl_stream_trials >= MAX_STREAM_CONNECT_TRIALS {
-                        error!(target: &self.base.name, "SSL stream connect timed out");
-                        failed = true;
-                        break Err(e);
+                        ssl_stream_trials = 0;
+                        warn!(target: &self.base.name, "SSL stream connect timed out");
+                        if self.base.cmd == Command::SslConnectFail {
+                            debug!(target: &self.base.name, "SslConnectFail command succeeded");
+                            self.base.report_cmd_result(None).unwrap_or(());
+                        } else {
+                            failed = true;
+                            break;
+                        }
                     }
                     thread::sleep(WAIT_STREAM_CONNECT);
                 }
@@ -1498,6 +1536,10 @@ impl TestEndBase {
                     return Err(CmdExecResult::Fail);
                 }
             }
+            Command::SslConnectFail => {
+                debug!(target: &self.name, "Received SslConnectFail command while connected");
+                return Err(CmdExecResult::Disconnect);
+            }
             Command::Timeout => {
                 debug!(target: &self.name, "Received Timeout command while connected");
                 return Err(CmdExecResult::Disconnect);
@@ -1578,6 +1620,10 @@ impl TestEndBase {
                 if let Err(_) = self.process_recv_payload(None) {
                     return Err(CmdExecResult::Fail);
                 }
+            }
+            Command::SslConnectFail => {
+                debug!(target: &self.name, "Received SslConnectFail command while connected");
+                return Err(CmdExecResult::Disconnect);
             }
             Command::Timeout => {
                 debug!(target: &self.name, "Received Timeout command while connected");
