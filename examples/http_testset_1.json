@@ -102,7 +102,7 @@
         "1": {
           "testend": "client",
           "cmd": "send",
-          "payload_file": "payload_http_get_two_extra_sslproxy_lines.txt"
+          "payload": "GET / HTTP/1.1\r\nHost: comixwall.org\r\nSSLproxy: sslproxy\r\nSSLproxy: sslproxy\r\n\r\n"
         },
         "2": {
           "testend": "server",
