@@ -31,6 +31,7 @@
         "key": "server.key",
         "ciphers": "MEDIUM",
         "use_sni": "yes",
+        "sni_servername": "comixwall.org",
         "verify_hostname": "yes",
         "no_tls10": "no",
         "max_proto_version": "tls11"
@@ -153,6 +154,11 @@
               "==": [
                 "SSLOK "
               ]
+            },
+            "sni_servername": {
+              "==": [
+                "comixwall.org"
+              ]
             }
           }
         },
@@ -192,6 +198,11 @@
             "ssl_state": {
               "==": [
                 "SSLOK "
+              ]
+            },
+            "sni_servername": {
+              "==": [
+                "comixwall.org"
               ]
             }
           }

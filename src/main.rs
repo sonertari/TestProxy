@@ -129,6 +129,7 @@ struct ProtoConfig {
     key: String,
     verify_peer: bool,
     use_sni: bool,
+    sni_servername: String,
     verify_hostname: bool,
     ciphers: String,
     min_proto_version: String,
@@ -430,6 +431,7 @@ impl Manager {
         let mut key = "".to_string();
         let mut verify_peer = false;
         let mut use_sni = false;
+        let mut sni_servername = "localhost".to_string();
         let mut verify_hostname = false;
         let mut ciphers = "ALL:-aNULL".to_string();
         let mut min_proto_version = "ssl3".to_string();
@@ -458,6 +460,9 @@ impl Manager {
             }
             if testconfig.proto.contains_key("use_sni") {
                 use_sni = testconfig.proto["use_sni"].eq("yes");
+            }
+            if testconfig.proto.contains_key("sni_servername") {
+                sni_servername = testconfig.proto["sni_servername"].clone();
             }
             if testconfig.proto.contains_key("verify_hostname") {
                 verify_hostname = testconfig.proto["verify_hostname"].eq("yes");
@@ -507,6 +512,7 @@ impl Manager {
             key,
             verify_peer,
             use_sni,
+            sni_servername,
             verify_hostname,
             ciphers,
             min_proto_version,
@@ -1179,7 +1185,7 @@ impl Client {
                 scc = scc.verify_hostname(false);
             }
 
-            match scc.connect("localhost", tcp_stream) {
+            match scc.connect(&self.base.proto.sni_servername, tcp_stream) {
                 Ok(ssl_stream) => {
                     debug!(target: &self.base.name, "SSL stream connected");
                     if self.base.cmd == Command::SslConnectFail {
@@ -1354,6 +1360,10 @@ impl TestEndBase {
 
         if config.contains_key("use_sni") {
             self.proto.use_sni = config["use_sni"].eq("yes");
+        }
+
+        if config.contains_key("sni_servername") {
+            self.proto.sni_servername = config["sni_servername"].clone();
         }
 
         if config.contains_key("verify_hostname") {
@@ -1651,13 +1661,13 @@ impl TestEndBase {
 
         let ssl = ssl_stream.ssl();
         let cipher = ssl.current_cipher().unwrap();
-        debug!(target: &self.name, "SSL stream current_cipher name: {}, standard_name: {}, version: {}, cipher_nid: {:?}", cipher.name(), cipher.standard_name().unwrap(), cipher.version(), cipher.cipher_nid().unwrap());
+        debug!(target: &self.name, "SSL stream current_cipher name: {}, standard_name: {}, version: {}, cipher_nid: {:?}", cipher.name(), cipher.standard_name().unwrap_or(""), cipher.version(), cipher.cipher_nid().unwrap_or(Nid::UNDEF));
         debug!(target: &self.name, "SSL stream current_cipher description: {}", cipher.description());
         debug!(target: &self.name, "SSL stream version_str {}", ssl.version_str());
         debug!(target: &self.name, "SSL stream state_string {}", ssl.state_string());
         //debug!(target: &self.name, "SSL stream state_string_long {}", ssl.state_string_long());
         // SNI sent by client
-        debug!(target: &self.name, "SSL stream servername {}", ssl.servername(NameType::HOST_NAME).unwrap());
+        debug!(target: &self.name, "SSL stream servername {}", ssl.servername(NameType::HOST_NAME).unwrap_or(""));
         //debug!(target: &self.name, "SSL stream time: {:#?}, timeout: {:#?}", ssl.session().unwrap().time(), ssl.session().unwrap().timeout());
 
         match ssl.peer_certificate() {
@@ -1697,6 +1707,9 @@ impl TestEndBase {
         }
         if self.assert.contains_key("ssl_state") {
             failed |= self.assert_str("ssl_state", ssl.state_string());
+        }
+        if self.assert.contains_key("sni_servername") {
+            failed |= self.assert_str("sni_servername", ssl.servername(NameType::HOST_NAME).unwrap_or(""));
         }
         failed
     }
