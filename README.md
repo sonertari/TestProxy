@@ -9,7 +9,8 @@ TestProxy is a tool for end-to-end testing of proxy servers.
 
 The main test harnesses file is composed of multiple test harnesses. Test 
 harnesses are divided into multiple test sets, which are composed of tests 
-defined in a test set file. Each test contains multiple states or steps.
+defined in a test set file. Each test contains multiple states or steps, and 
+may contain assertions.
 
 TestProxy runs multithreaded. Test harnesses are run serially, starting from 
 the first one. But TestProxy starts a manager thread for each test set in test 
@@ -19,7 +20,7 @@ thread communicates with those server and client threads over messaging
 channels, instructs them to send or receive payloads defined in test 
 states, and expects execution results back.
 
-Tests are defined in json files. Since protocol configuration, proxy and 
+Tests are defined in json files. Since protocol configuration, client and 
 server addresses are test set specific, they are configured in json files for 
 test sets. See the sample files under the `examples` folder.
 

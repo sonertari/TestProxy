@@ -1,8 +1,8 @@
 [package]
 name = "testproxy"
 description = "Tool for end-to-end testing of proxy servers"
-repository = "https://github.com/sonertari/testproxy"
-homepage = "https://github.com/sonertari/testproxy"
+repository = "https://github.com/sonertari/TestProxy"
+homepage = "https://github.com/sonertari/TestProxy"
 version = "0.0.1"
 authors = ["Soner Tari <sonertari@gmail.com>"]
 keywords = ["testproxy", "testing", "proxy", "end-to-end"]
@@ -25,7 +25,7 @@ chrono = "0.4.7"
 regex = "1.1.7"
 
 [badges]
-travis-ci = { repository = "sonertari/testproxy", branch = "master" }
+travis-ci = { repository = "sonertari/TestProxy", branch = "master" }
 maintenance = { status = "passively-maintained" }
 
 [profile.release]
