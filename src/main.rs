@@ -55,9 +55,9 @@ fn main() {
     logging::configure_logging(&config);
     debug!("{:?}", config);
 
-    let file = File::open(config.clone().testharness.unwrap()).unwrap();
+    let file = File::open(config.clone().testharness).expect("Cannot open test harnesses file");
     let reader = BufReader::new(file);
-    let testharnesses: TestHarnesses = serde_json::from_reader(reader).unwrap();
+    let testharnesses: TestHarnesses = serde_json::from_reader(reader).expect("Cannot load test harnesses file");
 
     warn!("{}", testharnesses.comment);
 

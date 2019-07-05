@@ -98,6 +98,7 @@ impl Client {
 
         let mut ssl_stream_trials = 0;
         let mut ssl_stream_result: Result<SslStream<&TcpStream>, ()> = Err(());
+        self.base.cmd_trials = 0;
         loop {
             if let Err(RecvTimeoutError::Disconnected) = self.base.get_command() {
                 break;

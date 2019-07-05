@@ -32,7 +32,7 @@ pub struct Config {
         takes_value = true,
         value_name = "FILENAME",
     )]
-    pub testharness: Option<PathBuf>,
+    pub testharness: PathBuf,
 
     /// Set log level, between 0 (none) and 5 (verbose)
     #[structopt(
