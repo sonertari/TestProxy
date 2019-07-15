@@ -40,12 +40,15 @@ pub const CHANNEL_TIMEOUT: Duration = Duration::from_millis(10);
 
 // Default TCP timeouts in millis
 pub const CONNECT_TIMEOUT: u64 = 1000;
-// Very short read/write timeouts may break SSL handshake, use values > 10
-pub const READ_TIMEOUT: u64 = 100;
-pub const WRITE_TIMEOUT: u64 = 100;
+// Very short read/write timeouts may break SSL handshake,
+// otherwise read/write operations may be timed out before finished (?).
+// For example, it is hard to find the correct WRITE_TIMEOUT,
+// WRITE_TIMEOUT should actually be computed based on the size of write data (?).
+pub const READ_TIMEOUT: u64 = CONNECT_TIMEOUT / 5;
+pub const WRITE_TIMEOUT: u64 = CONNECT_TIMEOUT / 5;
 
-pub const WAIT_STREAM_CONNECT: Duration = Duration::from_millis(10);
-pub const MAX_STREAM_CONNECT_TRIALS: i32 = 100;
+pub const WAIT_STREAM_CONNECT: Duration = Duration::from_millis(CONNECT_TIMEOUT / 100);
+pub const MAX_STREAM_CONNECT_TRIALS: i32 = 10;
 
 // For TCP disconnect detection
 const MAX_RECV_DISCONNECT_DETECT: i32 = 4;
@@ -527,9 +530,10 @@ impl TestEndBase {
                 // Do not use ssl_read() here, it doesn't accept 0 bytes as received?
                 match ssl_stream.ssl_read(&mut line) {
                     Ok(n) => {
-                        trace!(target: &self.name, "SSL stream recv_payload: {}", self.recv_trials);
+                        let recv = &String::from_utf8_lossy(&line[0..n]).to_string();
+                        debug!(target: &self.name, "SSL stream recv_trial {} ({}): {}", self.recv_trials, recv.len(), recv);
                         self.recv_trials = 0;
-                        self.recv_payload.push_str(&String::from_utf8_lossy(&line[0..n]).to_string());
+                        self.recv_payload.push_str(recv);
                     }
                     // TODO: Should we handle ErrorCode::ZERO_RETURN and other errors separately?
                     Err(e) => {
@@ -597,7 +601,7 @@ impl TestEndBase {
                 match tcp_stream.read(&mut line) {
                     Ok(n) => {
                         let recv = &String::from_utf8_lossy(&line[0..n]).to_string();
-                        trace!(target: &self.name, "TCP stream read OK ({}): {}", recv.len(), recv);
+                        debug!(target: &self.name, "TCP stream recv_trial {} ({}): {}", self.recv_trials, recv.len(), recv);
                         if recv.is_empty() {
                             self.disconnect_detect_trials += 1;
                             trace!(target: &self.name, "TCP stream read disconnect detect trial: {}", self.disconnect_detect_trials);
