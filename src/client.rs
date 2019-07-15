@@ -186,18 +186,22 @@ impl Client {
                     break;
                 }
                 Err(e) => {
-                    ssl_stream_trials += 1;
-                    debug!(target: &self.base.name, "SSL stream error ({}): {}", ssl_stream_trials, e);
-                    if ssl_stream_trials >= MAX_STREAM_CONNECT_TRIALS {
-                        ssl_stream_trials = 0;
-                        warn!(target: &self.base.name, "SSL stream connect timed out");
-                        if self.base.cmd == Command::SslConnectFail {
-                            debug!(target: &self.base.name, "SslConnectFail command succeeded");
-                            self.base.report_cmd_result(None).unwrap_or(());
-                        } else {
-                            // Fail only if we are executing a command
-                            failed = self.base.cmd != Command::None;
-                            break;
+                    // Fail only if we are executing a command
+                    if self.base.cmd == Command::None {
+                        trace!(target: &self.base.name, "SSL stream error without cmd ({}): {}", ssl_stream_trials, e);
+                    } else {
+                        ssl_stream_trials += 1;
+                        debug!(target: &self.base.name, "SSL stream error ({}): {}", ssl_stream_trials, e);
+                        if ssl_stream_trials >= MAX_STREAM_CONNECT_TRIALS {
+                            ssl_stream_trials = 0;
+                            warn!(target: &self.base.name, "SSL stream connect timed out");
+                            if self.base.cmd == Command::SslConnectFail {
+                                debug!(target: &self.base.name, "SslConnectFail command succeeded");
+                                self.base.report_cmd_result(None).unwrap_or(());
+                            } else {
+                                failed = true;
+                                break;
+                            }
                         }
                     }
                     thread::sleep(WAIT_STREAM_CONNECT);
