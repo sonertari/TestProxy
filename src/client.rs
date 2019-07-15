@@ -195,7 +195,8 @@ impl Client {
                             debug!(target: &self.base.name, "SslConnectFail command succeeded");
                             self.base.report_cmd_result(None).unwrap_or(());
                         } else {
-                            failed = true;
+                            // Fail only if we are executing a command
+                            failed = self.base.cmd != Command::None;
                             break;
                         }
                     }

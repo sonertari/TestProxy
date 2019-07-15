@@ -143,7 +143,8 @@ impl Server {
                     debug!(target: &self.base.name, "SSL stream connect HandshakeError ({}): {}", ssl_stream_trials, e);
                     if ssl_stream_trials >= MAX_STREAM_CONNECT_TRIALS {
                         warn!(target: &self.base.name, "SSL stream connect timed out");
-                        *failed = true;
+                        // Fail only if we are executing a command
+                        *failed = self.base.cmd != Command::None;
                         break Err(e);
                     }
                     thread::sleep(WAIT_STREAM_CONNECT);
