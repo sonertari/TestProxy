@@ -407,6 +407,13 @@ impl Manager {
                     self.recv_msg(TestEnd::Client);
                     break;
                 }
+
+                // Reduce keepalive frequency by 10 folds
+                if test_trials % 10 == 0 {
+                    // Send keepalive command to the test end waiting for its turn, otherwise its command loop may time out
+                    let te = if self.testend == TestEnd::Client { TestEnd::Server } else { TestEnd::Client };
+                    self.send_command(&te, Msg::from_cmd(Command::KeepAlive));
+                }
             }
         }
     }

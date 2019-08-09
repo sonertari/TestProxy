@@ -118,6 +118,9 @@ impl Client {
                 self.base.reset_command();
                 break;
             }
+            if self.base.cmd == Command::KeepAlive {
+                self.base.reset_command();
+            }
 
             let mut scb = SslConnector::builder(SslMethod::tls()).expect("Cannot create SslConnector");
 
@@ -187,7 +190,7 @@ impl Client {
                 }
                 Err(e) => {
                     // Fail only if we are executing a command
-                    if self.base.cmd == Command::None {
+                    if self.base.cmd == Command::None || self.base.cmd == Command::KeepAlive {
                         trace!(target: &self.base.name, "SSL stream error without cmd ({}): {}", ssl_stream_trials, e);
                     } else {
                         ssl_stream_trials += 1;

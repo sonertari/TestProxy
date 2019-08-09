@@ -96,6 +96,20 @@ impl Display for Proto {
     }
 }
 
+impl FromStr for Proto {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "tcp" => Ok(Proto::Tcp),
+            "ssl" => Ok(Proto::Ssl),
+            proto => {
+                error!("Proto not supported: {}", proto);
+                panic!("Proto not supported")
+            }
+        }
+    }
+}
+
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct ProtoConfig {
     pub proto: Proto,
@@ -199,6 +213,7 @@ pub enum Command {
     Timeout,
     Quit,
     Fail,
+    KeepAlive,
     None,
 }
 
@@ -211,6 +226,7 @@ impl Display for Command {
             Command::Timeout => write!(fmt, "timeout"),
             Command::Quit => write!(fmt, "quit"),
             Command::Fail => write!(fmt, "fail"),
+            Command::KeepAlive => write!(fmt, "keepalive"),
             Command::None => write!(fmt, "none"),
         }
     }
@@ -316,11 +332,7 @@ impl TestEndBase {
 
     fn configure_proto(&mut self, config: BTreeMap<String, String>) {
         if config.contains_key("proto") {
-            if config["proto"].eq("tcp") {
-                self.proto.proto = Proto::Tcp;
-            } else if config["proto"].eq("ssl") {
-                self.proto.proto = Proto::Ssl;
-            }
+            self.proto.proto = Proto::from_str(config["proto"].as_str()).unwrap();
         }
 
         if config.contains_key("connect_timeout") {
@@ -436,6 +448,9 @@ impl TestEndBase {
     pub fn get_command(&mut self) -> Result<(), RecvTimeoutError> {
         match self.rx.lock().unwrap().recv_timeout(CHANNEL_TIMEOUT) {
             Ok(msg) => {
+                if msg.cmd == Command::KeepAlive && self.cmd != Command::None {
+                    error!(target: &self.name, "Received KeepAlive command while executing cmd: {}", self.cmd);
+                }
                 self.cmd = msg.cmd;
                 self.payload = msg.payload;
                 self.assert = msg.assert;
@@ -560,6 +575,9 @@ impl TestEndBase {
                 self.reset_command();
                 return Err(CmdExecResult::Fail);
             }
+            Command::KeepAlive => {
+                self.reset_command();
+            }
             Command::None => {}
         }
         Ok(())
@@ -644,6 +662,9 @@ impl TestEndBase {
             Command::Fail => {
                 self.reset_command();
                 return Err(CmdExecResult::Fail);
+            }
+            Command::KeepAlive => {
+                self.reset_command();
             }
             Command::None => {}
         }

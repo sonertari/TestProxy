@@ -245,7 +245,7 @@ impl Server {
                 }
                 Err(e) => {
                     // Fail only if we are executing a command
-                    if self.base.cmd == Command::None {
+                    if self.base.cmd == Command::None || self.base.cmd == Command::KeepAlive {
                         trace!(target: &self.base.name, "TCP stream error without cmd ({}): {}", tcp_stream_trials, e.to_string());
                     } else {
                         tcp_stream_trials += 1;
@@ -284,6 +284,9 @@ impl Server {
                     failed = true;
                     break;
                 }
+            }
+            if self.base.cmd == Command::KeepAlive {
+                self.base.reset_command();
             }
         }
 
