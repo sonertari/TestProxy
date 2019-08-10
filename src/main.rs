@@ -55,9 +55,10 @@ fn main() {
     logging::configure_logging(&config);
     debug!("{:?}", config);
 
-    let file = File::open(config.clone().testharness).expect("Cannot open test harnesses file");
+    let testharness_file = config.testharness.to_str().expect("Cannot convert test harness file name");
+    let file = File::open(testharness_file).expect(&format!("Cannot open test harness file: {}", testharness_file));
     let reader = BufReader::new(file);
-    let testharnesses: TestHarnesses = serde_json::from_reader(reader).expect("Cannot load test harnesses file");
+    let testharnesses: TestHarnesses = serde_json::from_reader(reader).expect(&format!("Cannot load test harness file: {}", testharness_file));
 
     warn!("{}", testharnesses.comment);
 
@@ -68,9 +69,9 @@ fn main() {
         for (sid, testset_file) in testharness.testsets {
             debug!("Spawn manager for test set {}", sid);
 
-            let file = File::open(testset_file).unwrap();
+            let file = File::open(&testset_file).expect(&format!("Cannot open test set file: {}", testset_file));
             let reader = BufReader::new(file);
-            let testset: TestSet = serde_json::from_reader(reader).unwrap();
+            let testset: TestSet = serde_json::from_reader(reader).expect(&format!("Cannot load test set file: {}", testset_file));
 
             thread_handles.push(thread::spawn(move || Manager::new(hid, sid).run(testset)));
         }
