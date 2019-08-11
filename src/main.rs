@@ -66,10 +66,10 @@ fn main() {
         warn!("Start test harness {}: {}", hid, testharness.comment);
 
         let mut thread_handles = Vec::new();
-        for (sid, testset_file) in testharness.testsets {
+        for (sid, ref testset_file) in testharness.testsets {
             debug!("Spawn manager for test set {}", sid);
 
-            let file = File::open(&testset_file).expect(&format!("Cannot open test set file: {}", testset_file));
+            let file = File::open(testset_file).expect(&format!("Cannot open test set file: {}", testset_file));
             let reader = BufReader::new(file);
             let testset: TestSet = serde_json::from_reader(reader).expect(&format!("Cannot load test set file: {}", testset_file));
 

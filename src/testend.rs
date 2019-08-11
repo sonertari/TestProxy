@@ -135,6 +135,8 @@ pub struct ProtoConfig {
     pub no_tls13: bool,
     pub compression: bool,
     pub ecdhcurve: String,
+    // Whether to set ecdh curve or not, it is expensive to find its name by nid
+    pub set_ecdhcurve: bool,
 }
 
 #[derive(Deserialize, Debug)]
@@ -215,6 +217,21 @@ pub enum Command {
     Fail,
     KeepAlive,
     None,
+}
+
+impl Command {
+    pub fn is_action_command(&self) -> bool {
+        match self {
+            Command::Send => true,
+            Command::Recv => true,
+            Command::SslConnectFail => true,
+            Command::Timeout => true,
+            Command::Quit => false,
+            Command::Fail => false,
+            Command::KeepAlive => false,
+            Command::None => false,
+        }
+    }
 }
 
 impl Display for Command {
@@ -421,6 +438,7 @@ impl TestEndBase {
 
         if config.contains_key("ecdhcurve") {
             self.proto.ecdhcurve = config["ecdhcurve"].clone();
+            self.proto.set_ecdhcurve = true;
         }
     }
 
@@ -509,6 +527,16 @@ impl TestEndBase {
         self.report_cmd_result(ssl_stream)
     }
 
+    pub fn check_command_timeout(&mut self) -> Result<(), CmdExecResult> {
+        self.cmd_trials += 1;
+        trace!(target: &self.name, "Command loop {}", self.cmd_trials);
+        if self.cmd_trials > MAX_CMD_TRIALS {
+            error!(target: &self.name, "Command loop timed out");
+            return Err(CmdExecResult::Fail);
+        }
+        Ok(())
+    }
+
     // TODO: Can we improve code reuse with execute_tcp_command()?
     pub fn execute_ssl_command(&mut self, ssl_stream: &mut SslStream<&TcpStream>) -> Result<(), CmdExecResult> {
         match self.cmd {
@@ -578,7 +606,9 @@ impl TestEndBase {
             Command::KeepAlive => {
                 self.reset_command();
             }
-            Command::None => {}
+            Command::None => {
+                return self.check_command_timeout();
+            }
         }
         Ok(())
     }
@@ -666,7 +696,9 @@ impl TestEndBase {
             Command::KeepAlive => {
                 self.reset_command();
             }
-            Command::None => {}
+            Command::None => {
+                return self.check_command_timeout();
+            }
         }
         Ok(())
     }

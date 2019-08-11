@@ -29,9 +29,9 @@ use std::time::Duration;
 use openssl::ec::{EcKey, EcKeyRef};
 use openssl::nid::Nid;
 use openssl::pkey::Params;
-use openssl::ssl::{ShutdownState, SslConnector, SslFiletype, SslMethod, SslOptions, SslStream, SslVerifyMode};
+use openssl::ssl::{ShutdownState, SslConnector, SslFiletype, SslMethod, SslOptions, SslStream, SslVerifyMode, ConnectConfiguration};
 
-use testend::{CmdExecResult, Command, MAX_CMD_TRIALS, MAX_STREAM_CONNECT_TRIALS, Msg, Proto, ProtoConfig, ssl_nid_by_name, str2sslversion, TestEndBase, WAIT_STREAM_CONNECT};
+use testend::{CmdExecResult, Command, MAX_STREAM_CONNECT_TRIALS, Msg, Proto, ProtoConfig, ssl_nid_by_name, str2sslversion, TestEndBase, WAIT_STREAM_CONNECT};
 
 pub struct Client {
     base: TestEndBase,
@@ -75,22 +75,69 @@ impl Client {
                 break false;
             }
 
-            if self.base.cmd == Command::None {
-                self.base.cmd_trials += 1;
-                trace!(target: &self.base.name, "TCP stream loop cmd trial {}", self.base.cmd_trials);
-                if self.base.cmd_trials > MAX_CMD_TRIALS {
-                    error!(target: &self.base.name, "TCP stream loop timed out");
-                    break true;
-                }
-            }
-
             if let Err(e) = self.base.execute_tcp_command(&tcp_stream) {
-                if e == CmdExecResult::Fail {
-                    break true;
-                }
-                break false;
+                break e == CmdExecResult::Fail;
             }
         }
+    }
+
+    fn configure_ssl(&self) -> ConnectConfiguration {
+        let mut scb = SslConnector::builder(SslMethod::tls()).expect("Cannot create SslConnector");
+
+        if !self.base.proto.crt.is_empty() {
+            scb.set_certificate_file(&self.base.proto.crt, SslFiletype::PEM).expect("Cannot set crt file");
+        }
+        if !self.base.proto.key.is_empty() {
+            scb.set_private_key_file(&self.base.proto.key, SslFiletype::PEM).expect("Cannot set key file");
+        }
+
+        scb.set_cipher_list(&self.base.proto.ciphers).expect("Cannot set cipher list");
+
+        scb.set_min_proto_version(Some(str2sslversion(&self.base.proto.min_proto_version))).expect("Cannot set min proto version");
+        scb.set_max_proto_version(Some(str2sslversion(&self.base.proto.max_proto_version))).expect("Cannot set max proto version");
+
+        if self.base.proto.no_ssl2 {
+            scb.set_options(SslOptions::NO_SSLV2);
+        }
+        if self.base.proto.no_ssl3 {
+            scb.set_options(SslOptions::NO_SSLV3);
+        }
+        if self.base.proto.no_tls10 {
+            scb.set_options(SslOptions::NO_TLSV1);
+        }
+        if self.base.proto.no_tls11 {
+            scb.set_options(SslOptions::NO_TLSV1_1);
+        }
+        if self.base.proto.no_tls12 {
+            scb.set_options(SslOptions::NO_TLSV1_2);
+        }
+        if self.base.proto.no_tls13 {
+            scb.set_options(SslOptions::NO_TLSV1_3);
+        }
+        if !self.base.proto.compression {
+            scb.set_options(SslOptions::NO_COMPRESSION);
+        }
+
+        if self.base.proto.set_ecdhcurve {
+            let ecdh = EcKey::from_curve_name(Nid::from_raw(ssl_nid_by_name(&self.base.proto.ecdhcurve))).expect("Cannot create EcKey");
+            // TODO: Is this the right way of typecasting to EcKeyRef, the compiler is fine with just &ecdh below, but the editor complains
+            scb.set_tmp_ecdh(&ecdh as &EcKeyRef<Params>).expect("Cannot set ecdh");
+        }
+
+        let mut scc = scb.build().configure().expect("Cannot create SSL ConnectConfiguration");
+        if self.base.proto.verify_peer {
+            scc.set_verify(SslVerifyMode::PEER);
+        } else {
+            scc.set_verify(SslVerifyMode::NONE);
+        }
+
+        if !self.base.proto.use_sni {
+            scc = scc.use_server_name_indication(false);
+        }
+        if !self.base.proto.verify_hostname {
+            scc = scc.verify_hostname(false);
+        }
+        scc
     }
 
     fn run_ssl(&mut self, tcp_stream: &TcpStream) -> bool {
@@ -104,95 +151,22 @@ impl Client {
                 break;
             }
 
-            if self.base.cmd == Command::None {
-                self.base.cmd_trials += 1;
-                trace!(target: &self.base.name, "SSL stream connect loop cmd trial {}", self.base.cmd_trials);
-                if self.base.cmd_trials > MAX_CMD_TRIALS {
-                    error!(target: &self.base.name, "SSL stream connect loop timed out");
-                    failed = true;
-                    break;
-                }
-            }
-            if self.base.cmd == Command::Quit {
-                debug!(target: &self.base.name, "Received quit command");
-                self.base.reset_command();
-                break;
-            }
-            if self.base.cmd == Command::KeepAlive {
-                self.base.reset_command();
-            }
+            if self.base.cmd.is_action_command() {
+                let scc = self.configure_ssl();
 
-            let mut scb = SslConnector::builder(SslMethod::tls()).expect("Cannot create SslConnector");
-
-            if !self.base.proto.crt.is_empty() {
-                scb.set_certificate_file(&self.base.proto.crt, SslFiletype::PEM).expect("Cannot set crt file");
-            }
-            if !self.base.proto.key.is_empty() {
-                scb.set_private_key_file(&self.base.proto.key, SslFiletype::PEM).expect("Cannot set key file");
-            }
-
-            scb.set_cipher_list(&self.base.proto.ciphers).expect("Cannot set cipher list");
-
-            scb.set_min_proto_version(Some(str2sslversion(&self.base.proto.min_proto_version))).expect("Cannot set min proto version");
-            scb.set_max_proto_version(Some(str2sslversion(&self.base.proto.max_proto_version))).expect("Cannot set max proto version");
-
-            if self.base.proto.no_ssl2 {
-                scb.set_options(SslOptions::NO_SSLV2);
-            }
-            if self.base.proto.no_ssl3 {
-                scb.set_options(SslOptions::NO_SSLV3);
-            }
-            if self.base.proto.no_tls10 {
-                scb.set_options(SslOptions::NO_TLSV1);
-            }
-            if self.base.proto.no_tls11 {
-                scb.set_options(SslOptions::NO_TLSV1_1);
-            }
-            if self.base.proto.no_tls12 {
-                scb.set_options(SslOptions::NO_TLSV1_2);
-            }
-            if self.base.proto.no_tls13 {
-                scb.set_options(SslOptions::NO_TLSV1_3);
-            }
-            if !self.base.proto.compression {
-                scb.set_options(SslOptions::NO_COMPRESSION);
-            }
-
-            let ecdh = EcKey::from_curve_name(Nid::from_raw(ssl_nid_by_name(&self.base.proto.ecdhcurve))).expect("Cannot create EcKey");
-            // TODO: Is this the right way of typecasting to EcKeyRef, the compiler is fine with just &ecdh below, but the editor complains
-            scb.set_tmp_ecdh(&ecdh as &EcKeyRef<Params>).expect("Cannot set ecdh");
-
-            let mut scc = scb.build().configure().expect("Cannot create SSL ConnectConfiguration");
-            if self.base.proto.verify_peer {
-                scc.set_verify(SslVerifyMode::PEER);
-            } else {
-                scc.set_verify(SslVerifyMode::NONE);
-            }
-
-            if !self.base.proto.use_sni {
-                scc = scc.use_server_name_indication(false);
-            }
-            if !self.base.proto.verify_hostname {
-                scc = scc.verify_hostname(false);
-            }
-
-            match scc.connect(&self.base.proto.sni_servername, tcp_stream) {
-                Ok(ssl_stream) => {
-                    debug!(target: &self.base.name, "SSL stream connected");
-                    if self.base.cmd == Command::SslConnectFail {
-                        debug!(target: &self.base.name, "SslConnectFail command failed");
-                        self.base.reset_command();
-                        failed = true;
-                    } else {
-                        ssl_stream_result = Ok(ssl_stream);
+                match scc.connect(&self.base.proto.sni_servername, tcp_stream) {
+                    Ok(ssl_stream) => {
+                        debug!(target: &self.base.name, "SSL stream connected");
+                        if self.base.cmd == Command::SslConnectFail {
+                            debug!(target: &self.base.name, "SslConnectFail command failed");
+                            self.base.reset_command();
+                            failed = true;
+                        } else {
+                            ssl_stream_result = Ok(ssl_stream);
+                        }
+                        break;
                     }
-                    break;
-                }
-                Err(e) => {
-                    // Fail only if we are executing a command
-                    if self.base.cmd == Command::None || self.base.cmd == Command::KeepAlive {
-                        trace!(target: &self.base.name, "SSL stream error without cmd ({}): {}", ssl_stream_trials, e);
-                    } else {
+                    Err(e) => {
                         ssl_stream_trials += 1;
                         debug!(target: &self.base.name, "SSL stream error ({}): {}", ssl_stream_trials, e);
                         if ssl_stream_trials >= MAX_STREAM_CONNECT_TRIALS {
@@ -206,8 +180,24 @@ impl Client {
                                 break;
                             }
                         }
+                        thread::sleep(WAIT_STREAM_CONNECT);
                     }
-                    thread::sleep(WAIT_STREAM_CONNECT);
+                }
+            } else {
+                // Do not timeout if we are executing an action command
+                if self.base.cmd == Command::None {
+                    if let Err(CmdExecResult::Fail) = self.base.check_command_timeout() {
+                        failed = true;
+                        break;
+                    }
+                }
+                if self.base.cmd == Command::Quit {
+                    debug!(target: &self.base.name, "Received quit command");
+                    self.base.reset_command();
+                    break;
+                }
+                if self.base.cmd == Command::KeepAlive {
+                    self.base.reset_command();
                 }
             }
         };
@@ -219,17 +209,8 @@ impl Client {
                     break;
                 }
 
-                if self.base.cmd == Command::None {
-                    self.base.cmd_trials += 1;
-                    trace!(target: &self.base.name, "SSL stream loop cmd trial {}", self.base.cmd_trials);
-                    if self.base.cmd_trials > MAX_CMD_TRIALS {
-                        error!(target: &self.base.name, "SSL stream loop timed out");
-                        failed = true;
-                        break;
-                    }
-                }
-
                 if let Err(e) = self.base.execute_ssl_command(&mut ssl_stream) {
+                    // ATTENTION: Do not use 'failed = e == CmdExecResult::Fail' here, it may change failed from true to false
                     if e == CmdExecResult::Fail {
                         failed = true;
                     }
@@ -245,8 +226,8 @@ impl Client {
                     break;
                 }
             }
-            if let Err(_) = ssl_stream.shutdown() {
-                debug!(target: &self.base.name, "SSL shutdown failed");
+            if let Err(e) = ssl_stream.shutdown() {
+                debug!(target: &self.base.name, "SSL shutdown failed: {}", e);
             }
         }
         failed
@@ -263,8 +244,8 @@ impl Client {
             } else {
                 failed = self.run_ssl(&tcp_stream);
             }
-            if let Err(_) = tcp_stream.shutdown(Shutdown::Both) {
-                debug!(target: &self.base.name, "TCP shutdown failed");
+            if let Err(e) = tcp_stream.shutdown(Shutdown::Both) {
+                debug!(target: &self.base.name, "TCP shutdown failed: {}", e);
             }
         }
 

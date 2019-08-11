@@ -29,7 +29,7 @@ use openssl::nid::Nid;
 use openssl::pkey::Params;
 use openssl::ssl::{HandshakeError, ShutdownState, SslAcceptor, SslFiletype, SslMethod, SslOptions, SslStream, SslVerifyMode};
 
-use testend::{CmdExecResult, Command, MAX_CMD_TRIALS, MAX_CONNECT_TIMEOUT_TRIALS, MAX_STREAM_CONNECT_TRIALS, Msg, Proto, ProtoConfig, ssl_nid_by_name, str2sslversion, TestEndBase, WAIT_STREAM_CONNECT};
+use testend::{CmdExecResult, Command, MAX_CONNECT_TIMEOUT_TRIALS, MAX_STREAM_CONNECT_TRIALS, Msg, Proto, ProtoConfig, ssl_nid_by_name, str2sslversion, TestEndBase, WAIT_STREAM_CONNECT};
 
 pub struct Server {
     hid: i32,
@@ -63,16 +63,6 @@ impl Server {
                 break false;
             }
 
-            if self.base.cmd == Command::None {
-                self.base.cmd_trials += 1;
-                trace!(target: &self.base.name, "TCP stream loop cmd trial {}", self.base.cmd_trials);
-                if self.base.cmd_trials > MAX_CMD_TRIALS {
-                    error!(target: &self.base.name, "TCP stream loop timed out");
-                    *failed = true;
-                    break true;
-                }
-            }
-
             if let Err(e) = self.base.execute_tcp_command(&tcp_stream) {
                 if e == CmdExecResult::Fail {
                     *failed = true;
@@ -85,9 +75,7 @@ impl Server {
         }
     }
 
-    fn run_ssl(&mut self, tcp_stream: &TcpStream, failed: &mut bool) -> bool {
-        let mut exit = false;
-
+    fn configure_ssl(&self) -> SslAcceptor {
         let mut sab = SslAcceptor::mozilla_intermediate(SslMethod::tls()).unwrap();
         if self.base.proto.verify_peer {
             sab.set_verify(SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT);
@@ -125,11 +113,19 @@ impl Server {
             sab.set_options(SslOptions::NO_COMPRESSION);
         }
 
-        let ecdh = EcKey::from_curve_name(Nid::from_raw(ssl_nid_by_name(&self.base.proto.ecdhcurve))).expect("Cannot create EcKey");
-        // TODO: Is this the right way of typecasting to EcKeyRef, the compiler is fine with just &ecdh below, but the editor complains
-        sab.set_tmp_ecdh(&ecdh as &EcKeyRef<Params>).expect("Cannot set ecdh");
+        if self.base.proto.set_ecdhcurve {
+            let ecdh = EcKey::from_curve_name(Nid::from_raw(ssl_nid_by_name(&self.base.proto.ecdhcurve))).expect("Cannot create EcKey");
+            // TODO: Is this the right way of typecasting to EcKeyRef, the compiler is fine with just &ecdh below, but the editor complains
+            sab.set_tmp_ecdh(&ecdh as &EcKeyRef<Params>).expect("Cannot set ecdh");
+        }
 
-        let acceptor = sab.build();
+        sab.build()
+    }
+
+    fn run_ssl(&mut self, tcp_stream: &TcpStream, failed: &mut bool) -> bool {
+        let mut exit = false;
+
+        let acceptor = self.configure_ssl();
 
         let mut ssl_stream_trials = 0;
         let ssl_stream_result: Result<SslStream<&TcpStream>, HandshakeError<&TcpStream>> = loop {
@@ -143,7 +139,7 @@ impl Server {
                     debug!(target: &self.base.name, "SSL stream connect HandshakeError ({}): {}", ssl_stream_trials, e);
                     if ssl_stream_trials >= MAX_STREAM_CONNECT_TRIALS {
                         warn!(target: &self.base.name, "SSL stream connect timed out");
-                        // Fail only if we are executing a command
+                        // Fail only if we are executing an action command
                         *failed = self.base.cmd != Command::None;
                         break Err(e);
                     }
@@ -157,16 +153,6 @@ impl Server {
             exit = loop {
                 if let Err(RecvTimeoutError::Disconnected) = self.base.get_command() {
                     break false;
-                }
-
-                if self.base.cmd == Command::None {
-                    self.base.cmd_trials += 1;
-                    trace!(target: &self.base.name, "SSL stream loop cmd trial {}", self.base.cmd_trials);
-                    if self.base.cmd_trials > MAX_CMD_TRIALS {
-                        error!(target: &self.base.name, "SSL stream loop timed out");
-                        *failed = true;
-                        break true;
-                    }
                 }
 
                 if let Err(e) = self.base.execute_ssl_command(&mut ssl_stream) {
@@ -190,8 +176,8 @@ impl Server {
                 }
             };
             // Stream shutdown fixes the issue where the server was getting stuck
-            if let Err(_) = ssl_stream.shutdown() {
-                debug!(target: &self.base.name, "SSL shutdown failed");
+            if let Err(e) = ssl_stream.shutdown() {
+                debug!(target: &self.base.name, "SSL shutdown failed: {}", e);
             }
         }
         exit
@@ -239,13 +225,13 @@ impl Server {
                         exit = self.run_ssl(&tcp_stream, &mut failed);
                     }
 
-                    if let Err(_) = tcp_stream.shutdown(Shutdown::Both) {
-                        debug!(target: &self.base.name, "TCP shutdown failed");
+                    if let Err(e) = tcp_stream.shutdown(Shutdown::Both) {
+                        debug!(target: &self.base.name, "TCP shutdown failed: {}", e);
                     }
                 }
                 Err(e) => {
-                    // Fail only if we are executing a command
-                    if self.base.cmd == Command::None || self.base.cmd == Command::KeepAlive {
+                    // Fail only if we are executing an action command
+                    if !self.base.cmd.is_action_command() {
                         trace!(target: &self.base.name, "TCP stream error without cmd ({}): {}", tcp_stream_trials, e.to_string());
                     } else {
                         tcp_stream_trials += 1;
@@ -274,13 +260,9 @@ impl Server {
                 self.base.reset_command();
                 break;
             }
-
-            // Do not timeout, if we are executing a command already
+            // Do not timeout if we are executing an action command
             if self.base.cmd == Command::None {
-                self.base.cmd_trials += 1;
-                trace!(target: &self.base.name, "Server loop cmd trial {}", self.base.cmd_trials);
-                if self.base.cmd_trials > MAX_CMD_TRIALS {
-                    error!(target: &self.base.name, "Server loop timed out");
+                if let Err(CmdExecResult::Fail) = self.base.check_command_timeout() {
                     failed = true;
                     break;
                 }

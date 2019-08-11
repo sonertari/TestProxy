@@ -141,6 +141,7 @@ impl Manager {
         let mut compression = false;
         // TODO: Check why no other ecdh curve works
         let mut ecdhcurve = "prime256v1".to_string();
+        let mut set_ecdhcurve = false;
 
         if testconfig.proto.contains_key("proto") && testconfig.proto["proto"].eq("ssl") {
             proto = Proto::Ssl;
@@ -195,6 +196,7 @@ impl Manager {
             }
             if testconfig.proto.contains_key("ecdhcurve") {
                 ecdhcurve = testconfig.proto["ecdhcurve"].clone();
+                set_ecdhcurve = true;
             }
         }
         ProtoConfig {
@@ -221,6 +223,7 @@ impl Manager {
             no_tls13,
             compression,
             ecdhcurve,
+            set_ecdhcurve,
         }
     }
 
