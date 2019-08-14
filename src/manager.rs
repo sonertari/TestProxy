@@ -241,13 +241,15 @@ impl Manager {
             let cmd = Command::from_str(&state["cmd"].as_str().unwrap()).unwrap();
 
             let mut payload = "".to_string();
-            let mut payload_file = "".to_string();
+            let mut payload_file = "";
             // payload_file has precedence over payload, if both exist
             if state.get("payload_file") != None {
-                payload_file = state["payload_file"].as_str().unwrap().to_string();
-                payload = String::from_utf8_lossy(&fs::read(&payload_file).unwrap()).to_string();
+                payload_file = state["payload_file"].as_str().unwrap();
+                payload = String::from_utf8_lossy(&fs::read(payload_file).expect(&format!("Cannot load payload file: {}", payload_file))).to_string();
             } else if state.get("payload") != None {
                 payload = state["payload"].as_str().unwrap().to_string();
+            } else {
+                warn!(target: &self.name, "No payload defined, assuming empty payload");
             }
 
             let mut assert: BTreeMap<String, Assertion> = BTreeMap::new();
@@ -347,20 +349,18 @@ impl Manager {
                         return RecvMsgResult::Quit;
                     }
                     _ => {
-                        if !self.test_failed {
-                            if test_succeeded {
-                                return RecvMsgResult::SendCommand;
-                            }
+                        if !self.test_failed && test_succeeded {
+                            return RecvMsgResult::SendCommand;
                         }
                         return RecvMsgResult::Quit;
                     }
                 }
             }
             Err(e) => {
-                trace!(target: &self.name, "Channel error on {}: {}", testend, e.to_string());
+                trace!(target: &self.name, "Channel recv timeout on {}: {}", testend, e.to_string());
+                return RecvMsgResult::NoMsg;
             }
         }
-        RecvMsgResult::None
     }
 
     fn run_test(&mut self) {
@@ -376,10 +376,11 @@ impl Manager {
                         test_trials = 0;
                     }
                     RecvMsgResult::Quit => {
+                        // Send quit command to the other end
                         self.send_command(&TestEnd::Client, Msg::from_cmd(Command::Quit));
                         exit = true;
                     }
-                    RecvMsgResult::None => {}
+                    RecvMsgResult::NoMsg => {}
                 }
                 match self.recv_msg(TestEnd::Client) {
                     RecvMsgResult::SendCommand => {
@@ -389,23 +390,26 @@ impl Manager {
                         test_trials = 0;
                     }
                     RecvMsgResult::Quit => {
+                        // Send quit command to the other end
                         self.send_command(&TestEnd::Server, Msg::from_cmd(Command::Quit));
                         exit = true;
                     }
-                    RecvMsgResult::None => {}
+                    RecvMsgResult::NoMsg => {}
                 }
 
-                test_trials += 1;
-                trace!(target: &self.name, "Test loop trial {}", test_trials);
-                if test_trials > MAX_TEST_TRIALS {
-                    error!(target: &self.name, "Test loop timed out");
-                    self.test_failed = true;
-                    exit = true;
+                if !exit {
+                    test_trials += 1;
+                    trace!(target: &self.name, "Test loop trial {}", test_trials);
+                    if test_trials > MAX_TEST_TRIALS {
+                        error!(target: &self.name, "Test loop timed out");
+                        self.test_failed = true;
+                        exit = true;
+                    }
                 }
 
                 if exit {
                     // TODO: Consume all messages in the channel and destroy the channel (?)
-                    // Consume any last messages in the channel, otherwise mgr thread cannot return
+                    // Consume any last message in the channels, otherwise mgr thread cannot return (?)
                     self.recv_msg(TestEnd::Server);
                     self.recv_msg(TestEnd::Client);
                     break;
@@ -414,8 +418,8 @@ impl Manager {
                 // Reduce keepalive frequency by 10 folds
                 if test_trials % 10 == 0 {
                     // Send keepalive command to the test end waiting for its turn, otherwise its command loop may time out
-                    let te = if self.testend == TestEnd::Client { TestEnd::Server } else { TestEnd::Client };
-                    self.send_command(&te, Msg::from_cmd(Command::KeepAlive));
+                    self.send_command(if self.testend == TestEnd::Client { &TestEnd::Server } else { &TestEnd::Client },
+                                      Msg::from_cmd(Command::KeepAlive));
                 }
             }
         }

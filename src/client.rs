@@ -31,7 +31,7 @@ use openssl::nid::Nid;
 use openssl::pkey::Params;
 use openssl::ssl::{ShutdownState, SslConnector, SslFiletype, SslMethod, SslOptions, SslStream, SslVerifyMode, ConnectConfiguration};
 
-use testend::{CmdExecResult, Command, MAX_STREAM_CONNECT_TRIALS, Msg, Proto, ProtoConfig, ssl_nid_by_name, str2sslversion, TestEndBase, WAIT_STREAM_CONNECT};
+use testend::{CommandError, Command, MAX_STREAM_CONNECT_TRIALS, Msg, Proto, ProtoConfig, ssl_nid_by_name, str2sslversion, TestEndBase, WAIT_STREAM_CONNECT};
 
 pub struct Client {
     base: TestEndBase,
@@ -76,7 +76,7 @@ impl Client {
             }
 
             if let Err(e) = self.base.execute_tcp_command(&tcp_stream) {
-                break e == CmdExecResult::Fail;
+                break e == CommandError::Fail;
             }
         }
     }
@@ -186,7 +186,7 @@ impl Client {
             } else {
                 // Do not timeout if we are executing an action command
                 if self.base.cmd == Command::None {
-                    if let Err(CmdExecResult::Fail) = self.base.check_command_timeout() {
+                    if let Err(CommandError::Fail) = self.base.check_command_timeout() {
                         failed = true;
                         break;
                     }
@@ -211,7 +211,7 @@ impl Client {
 
                 if let Err(e) = self.base.execute_ssl_command(&mut ssl_stream) {
                     // ATTENTION: Do not use 'failed = e == CmdExecResult::Fail' here, it may change failed from true to false
-                    if e == CmdExecResult::Fail {
+                    if e == CommandError::Fail {
                         failed = true;
                     }
                     break;

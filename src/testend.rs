@@ -284,7 +284,7 @@ pub enum SendCommandResult {
 pub enum RecvMsgResult {
     SendCommand,
     Quit,
-    None,
+    NoMsg,
 }
 
 pub struct Msg {
@@ -303,8 +303,10 @@ impl Msg {
     }
 }
 
+type CommandResult = Result<(), CommandError>;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CmdExecResult {
+pub enum CommandError {
     Quit,
     Fail,
     Disconnect,
@@ -527,18 +529,18 @@ impl TestEndBase {
         self.report_cmd_result(ssl_stream)
     }
 
-    pub fn check_command_timeout(&mut self) -> Result<(), CmdExecResult> {
+    pub fn check_command_timeout(&mut self) -> CommandResult {
         self.cmd_trials += 1;
         trace!(target: &self.name, "Command loop {}", self.cmd_trials);
         if self.cmd_trials > MAX_CMD_TRIALS {
             error!(target: &self.name, "Command loop timed out");
-            return Err(CmdExecResult::Fail);
+            return Err(CommandError::Fail);
         }
         Ok(())
     }
 
     // TODO: Can we improve code reuse with execute_tcp_command()?
-    pub fn execute_ssl_command(&mut self, ssl_stream: &mut SslStream<&TcpStream>) -> Result<(), CmdExecResult> {
+    pub fn execute_ssl_command(&mut self, ssl_stream: &mut SslStream<&TcpStream>) -> CommandResult {
         match self.cmd {
             Command::Send => {
                 // TODO: Is it possible to handle send result similarly to recv? But we can call ssl_write() only once
@@ -548,7 +550,7 @@ impl TestEndBase {
                             match ssl_stream.flush() {
                                 Ok(()) => {
                                     if let Err(_) = self.report_cmd_result(Some(ssl_stream)) {
-                                        return Err(CmdExecResult::Fail);
+                                        return Err(CommandError::Fail);
                                     }
                                     return Ok(());
                                 }
@@ -566,7 +568,7 @@ impl TestEndBase {
                 }
                 self.payload = "".to_string();
                 self.report_cmd_result(Some(ssl_stream)).unwrap_or(());
-                return Err(CmdExecResult::Fail);
+                return Err(CommandError::Fail);
             }
             Command::Recv => {
                 let mut line = [0; BUF_SIZE];
@@ -584,24 +586,24 @@ impl TestEndBase {
                     }
                 }
                 if let Err(_) = self.process_recv_payload(Some(ssl_stream)) {
-                    return Err(CmdExecResult::Fail);
+                    return Err(CommandError::Fail);
                 }
             }
             Command::SslConnectFail => {
                 debug!(target: &self.name, "Received SslConnectFail command while connected");
-                return Err(CmdExecResult::Disconnect);
+                return Err(CommandError::Disconnect);
             }
             Command::Timeout => {
                 debug!(target: &self.name, "Received Timeout command while connected");
-                return Err(CmdExecResult::Disconnect);
+                return Err(CommandError::Disconnect);
             }
             Command::Quit => {
                 self.reset_command();
-                return Err(CmdExecResult::Quit);
+                return Err(CommandError::Quit);
             }
             Command::Fail => {
                 self.reset_command();
-                return Err(CmdExecResult::Fail);
+                return Err(CommandError::Fail);
             }
             Command::KeepAlive => {
                 self.reset_command();
@@ -613,7 +615,7 @@ impl TestEndBase {
         Ok(())
     }
 
-    pub fn execute_tcp_command(&mut self, mut tcp_stream: &TcpStream) -> Result<(), CmdExecResult> {
+    pub fn execute_tcp_command(&mut self, mut tcp_stream: &TcpStream) -> CommandResult {
         match self.cmd {
             Command::Send => {
                 // TODO: Is it possible to handle send result similarly to recv? But we can call ssl_write() only once
@@ -623,7 +625,7 @@ impl TestEndBase {
                             match tcp_stream.flush() {
                                 Ok(()) => {
                                     if let Err(_) = self.report_cmd_result(None) {
-                                        return Err(CmdExecResult::Fail);
+                                        return Err(CommandError::Fail);
                                     }
                                     return Ok(());
                                 }
@@ -641,7 +643,7 @@ impl TestEndBase {
                 }
                 self.payload = "".to_string();
                 self.report_cmd_result(None).unwrap_or(());
-                return Err(CmdExecResult::Fail);
+                return Err(CommandError::Fail);
             }
             Command::Recv => {
                 let mut line = [0; BUF_SIZE];
@@ -658,9 +660,9 @@ impl TestEndBase {
                                 self.recv_payload.push_str(recv);
 
                                 if let Err(_) = self.report_cmd_result(None) {
-                                    return Err(CmdExecResult::Fail);
+                                    return Err(CommandError::Fail);
                                 }
-                                return Err(CmdExecResult::Disconnect);
+                                return Err(CommandError::Disconnect);
                             }
                         } else {
                             self.recv_trials = 0;
@@ -674,24 +676,24 @@ impl TestEndBase {
                     }
                 }
                 if let Err(_) = self.process_recv_payload(None) {
-                    return Err(CmdExecResult::Fail);
+                    return Err(CommandError::Fail);
                 }
             }
             Command::SslConnectFail => {
                 debug!(target: &self.name, "Received SslConnectFail command while connected");
-                return Err(CmdExecResult::Disconnect);
+                return Err(CommandError::Disconnect);
             }
             Command::Timeout => {
                 debug!(target: &self.name, "Received Timeout command while connected");
-                return Err(CmdExecResult::Disconnect);
+                return Err(CommandError::Disconnect);
             }
             Command::Quit => {
                 self.reset_command();
-                return Err(CmdExecResult::Quit);
+                return Err(CommandError::Quit);
             }
             Command::Fail => {
                 self.reset_command();
-                return Err(CmdExecResult::Fail);
+                return Err(CommandError::Fail);
             }
             Command::KeepAlive => {
                 self.reset_command();
@@ -723,11 +725,8 @@ impl TestEndBase {
 
         match ssl.peer_certificate() {
             Some(peer_cert) => {
-                let mut pcv = Vec::new();
                 // TODO: Check why all peer.cert entry methods give the same entries
-                for e in peer_cert.issuer_name().entries() {
-                    pcv.push(format!("{}", &e.data().as_utf8().unwrap()));
-                }
+                let pcv: Vec<String> = peer_cert.issuer_name().entries().map(|x| x.data().as_utf8().unwrap().to_string()).collect();
                 let peer_certificate = pcv.join(", ");
                 debug!(target: &self.name, "SSL stream peer_certificate: {}", peer_certificate);
                 debug!(target: &self.name, "SSL stream peer_certificate not_before: {}", peer_cert.not_before());

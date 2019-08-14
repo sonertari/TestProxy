@@ -29,7 +29,7 @@ use openssl::nid::Nid;
 use openssl::pkey::Params;
 use openssl::ssl::{HandshakeError, ShutdownState, SslAcceptor, SslFiletype, SslMethod, SslOptions, SslStream, SslVerifyMode};
 
-use testend::{CmdExecResult, Command, MAX_CONNECT_TIMEOUT_TRIALS, MAX_STREAM_CONNECT_TRIALS, Msg, Proto, ProtoConfig, ssl_nid_by_name, str2sslversion, TestEndBase, WAIT_STREAM_CONNECT};
+use testend::{CommandError, Command, MAX_CONNECT_TIMEOUT_TRIALS, MAX_STREAM_CONNECT_TRIALS, Msg, Proto, ProtoConfig, ssl_nid_by_name, str2sslversion, TestEndBase, WAIT_STREAM_CONNECT};
 
 pub struct Server {
     hid: i32,
@@ -64,9 +64,9 @@ impl Server {
             }
 
             if let Err(e) = self.base.execute_tcp_command(&tcp_stream) {
-                if e == CmdExecResult::Fail {
+                if e == CommandError::Fail {
                     *failed = true;
-                } else if e == CmdExecResult::Disconnect {
+                } else if e == CommandError::Disconnect {
                     break false;
                 }
                 break true;
@@ -156,9 +156,9 @@ impl Server {
                 }
 
                 if let Err(e) = self.base.execute_ssl_command(&mut ssl_stream) {
-                    if e == CmdExecResult::Fail {
+                    if e == CommandError::Fail {
                         *failed = true;
-                    } else if e == CmdExecResult::Disconnect {
+                    } else if e == CommandError::Disconnect {
                         break false;
                     }
                     break true;
@@ -262,7 +262,7 @@ impl Server {
             }
             // Do not timeout if we are executing an action command
             if self.base.cmd == Command::None {
-                if let Err(CmdExecResult::Fail) = self.base.check_command_timeout() {
+                if let Err(CommandError::Fail) = self.base.check_command_timeout() {
                     failed = true;
                     break;
                 }
