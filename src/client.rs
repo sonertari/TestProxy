@@ -29,9 +29,9 @@ use std::time::Duration;
 use openssl::ec::{EcKey, EcKeyRef};
 use openssl::nid::Nid;
 use openssl::pkey::Params;
-use openssl::ssl::{ShutdownState, SslConnector, SslFiletype, SslMethod, SslOptions, SslStream, SslVerifyMode, ConnectConfiguration};
+use openssl::ssl::{ConnectConfiguration, ShutdownState, SslConnector, SslFiletype, SslMethod, SslOptions, SslStream, SslVerifyMode};
 
-use testend::{CommandError, Command, MAX_STREAM_CONNECT_TRIALS, Msg, Proto, ProtoConfig, ssl_nid_by_name, str2sslversion, TestEndBase, WAIT_STREAM_CONNECT};
+use testend::{Command, CommandError, MAX_STREAM_CONNECT_TRIALS, Msg, Proto, ProtoConfig, ssl_nid_by_name, str2sslversion, TestEndBase, WAIT_STREAM_CONNECT};
 
 pub struct Client {
     base: TestEndBase,
@@ -56,7 +56,7 @@ impl Client {
                 }
                 Err(e) => {
                     tcp_stream_trials += 1;
-                    debug!(target: &self.base.name, "TCP stream error ({}): {}", tcp_stream_trials, e);
+                    trace!(target: &self.base.name, "TCP stream error ({}): {}", tcp_stream_trials, e);
                     if tcp_stream_trials >= MAX_STREAM_CONNECT_TRIALS {
                         error!(target: &self.base.name, "TCP stream connect timed out");
                         *failed = true;
@@ -143,7 +143,6 @@ impl Client {
     fn run_ssl(&mut self, tcp_stream: &TcpStream) -> bool {
         let mut failed = false;
 
-        let mut ssl_stream_trials = 0;
         let mut ssl_stream_result: Result<SslStream<&TcpStream>, ()> = Err(());
         self.base.cmd_trials = 0;
         loop {
@@ -154,6 +153,7 @@ impl Client {
             if self.base.cmd.is_action_command() {
                 let scc = self.configure_ssl();
 
+                // ATTENTION: Do not loop trying to connect the ssl stream, otherwise handshake fails
                 match scc.connect(&self.base.proto.sni_servername, tcp_stream) {
                     Ok(ssl_stream) => {
                         debug!(target: &self.base.name, "SSL stream connected");
@@ -167,37 +167,22 @@ impl Client {
                         break;
                     }
                     Err(e) => {
-                        ssl_stream_trials += 1;
-                        debug!(target: &self.base.name, "SSL stream error ({}): {}", ssl_stream_trials, e);
-                        if ssl_stream_trials >= MAX_STREAM_CONNECT_TRIALS {
-                            ssl_stream_trials = 0;
-                            warn!(target: &self.base.name, "SSL stream connect timed out");
-                            if self.base.cmd == Command::SslConnectFail {
-                                debug!(target: &self.base.name, "SslConnectFail command succeeded");
-                                self.base.report_cmd_result(None).unwrap_or(());
-                            } else {
-                                failed = true;
-                                break;
-                            }
+                        debug!(target: &self.base.name, "SSL stream error: {}", e);
+                        if self.base.cmd == Command::SslConnectFail {
+                            debug!(target: &self.base.name, "SslConnectFail command succeeded");
+                            self.base.report_cmd_result(None).unwrap_or(());
+                        } else {
+                            failed = true;
+                            break;
                         }
-                        thread::sleep(WAIT_STREAM_CONNECT);
                     }
                 }
             } else {
-                // Do not timeout if we are executing an action command
-                if self.base.cmd == Command::None {
-                    if let Err(CommandError::Fail) = self.base.check_command_timeout() {
+                if let Err(e) = self.base.execute_non_action_command() {
+                    if e == CommandError::Fail {
                         failed = true;
-                        break;
                     }
-                }
-                if self.base.cmd == Command::Quit {
-                    debug!(target: &self.base.name, "Received quit command");
-                    self.base.reset_command();
                     break;
-                }
-                if self.base.cmd == Command::KeepAlive {
-                    self.base.reset_command();
                 }
             }
         };
@@ -236,16 +221,21 @@ impl Client {
     pub fn run(&mut self) -> bool {
         let mut failed = false;
 
-        if let Ok(tcp_stream) = self.connect_tcp_stream(&mut failed) {
-            self.base.configure_tcp_stream(&tcp_stream);
+        // Manager will not start the tests until children reply the Ready command
+        self.base.process_ready_command(&mut failed);
 
-            if self.base.proto.proto == Proto::Tcp {
-                failed = self.run_tcp(&tcp_stream);
-            } else {
-                failed = self.run_ssl(&tcp_stream);
-            }
-            if let Err(e) = tcp_stream.shutdown(Shutdown::Both) {
-                debug!(target: &self.base.name, "TCP shutdown failed: {}", e);
+        if !failed {
+            if let Ok(tcp_stream) = self.connect_tcp_stream(&mut failed) {
+                self.base.configure_tcp_stream(&tcp_stream);
+
+                if self.base.proto.proto == Proto::Tcp {
+                    failed = self.run_tcp(&tcp_stream);
+                } else {
+                    failed = self.run_ssl(&tcp_stream);
+                }
+                if let Err(e) = tcp_stream.shutdown(Shutdown::Both) {
+                    debug!(target: &self.base.name, "TCP shutdown failed: {}", e);
+                }
             }
         }
 

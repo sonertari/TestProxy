@@ -29,7 +29,7 @@ use openssl::nid::Nid;
 use openssl::pkey::Params;
 use openssl::ssl::{HandshakeError, ShutdownState, SslAcceptor, SslFiletype, SslMethod, SslOptions, SslStream, SslVerifyMode};
 
-use testend::{CommandError, Command, MAX_CONNECT_TIMEOUT_TRIALS, MAX_STREAM_CONNECT_TRIALS, Msg, Proto, ProtoConfig, ssl_nid_by_name, str2sslversion, TestEndBase, WAIT_STREAM_CONNECT};
+use testend::{Command, CommandError, MAX_CONNECT_TIMEOUT_TRIALS, MAX_STREAM_CONNECT_TRIALS, Msg, Proto, ProtoConfig, ssl_nid_by_name, str2sslversion, TestEndBase, WAIT_STREAM_CONNECT};
 
 pub struct Server {
     hid: i32,
@@ -127,24 +127,17 @@ impl Server {
 
         let acceptor = self.configure_ssl();
 
-        let mut ssl_stream_trials = 0;
-        let ssl_stream_result: Result<SslStream<&TcpStream>, HandshakeError<&TcpStream>> = loop {
-            match acceptor.accept(tcp_stream) {
-                Ok(ssl_stream) => {
-                    debug!(target: &self.base.name, "SSL stream connected");
-                    break Ok(ssl_stream);
-                }
-                Err(e) => {
-                    ssl_stream_trials += 1;
-                    debug!(target: &self.base.name, "SSL stream connect HandshakeError ({}): {}", ssl_stream_trials, e);
-                    if ssl_stream_trials >= MAX_STREAM_CONNECT_TRIALS {
-                        warn!(target: &self.base.name, "SSL stream connect timed out");
-                        // Fail only if we are executing an action command
-                        *failed = self.base.cmd != Command::None;
-                        break Err(e);
-                    }
-                    thread::sleep(WAIT_STREAM_CONNECT);
-                }
+        // ATTENTION: Do not loop trying to accept the ssl stream, otherwise handshake fails
+        let ssl_stream_result: Result<SslStream<&TcpStream>, HandshakeError<&TcpStream>> = match acceptor.accept(tcp_stream) {
+            Ok(ssl_stream) => {
+                debug!(target: &self.base.name, "SSL stream connected");
+                Ok(ssl_stream)
+            }
+            Err(e) => {
+                debug!(target: &self.base.name, "SSL stream connect HandshakeError: {}", e);
+                // Fail only if we are executing an action command
+                *failed = self.base.cmd != Command::None;
+                Err(e)
             }
         };
 
@@ -190,85 +183,82 @@ impl Server {
 
         let mut stream_id = 1;
         let mut tcp_stream_trials = 0;
-        let mut exit = false;
+        let mut exit;
         let mut failed = false;
 
         // nonblocking is necessary to get the next stream (connection)
         server.set_nonblocking(true).unwrap();
 
-        self.base.cmd_trials = 0;
-        for server_result in server.incoming() {
-            if exit {
-                break;
-            }
-            match server_result {
-                Ok(tcp_stream) => {
-                    // Reset the trial count of the outer-most loop on success
-                    tcp_stream_trials = 0;
-                    self.base.name = self.name(stream_id);
-                    stream_id += 1;
+        // Manager will not start the tests until children reply the Ready command
+        exit = self.base.process_ready_command(&mut failed);
 
-                    debug!(target: &self.base.name, "TCP stream connected");
-
-                    if self.base.cmd == Command::Timeout {
-                        debug!(target: &self.base.name, "Timeout command failed");
-                        self.base.reset_command();
-                        failed = true;
-                        break;
-                    }
-
-                    self.base.configure_tcp_stream(&tcp_stream);
-
-                    if self.base.proto.proto == Proto::Tcp {
-                        exit = self.run_tcp(&tcp_stream, &mut failed);
-                    } else {
-                        exit = self.run_ssl(&tcp_stream, &mut failed);
-                    }
-
-                    if let Err(e) = tcp_stream.shutdown(Shutdown::Both) {
-                        debug!(target: &self.base.name, "TCP shutdown failed: {}", e);
-                    }
+        if !exit && !failed {
+            self.base.cmd_trials = 0;
+            for server_result in server.incoming() {
+                if exit {
+                    break;
                 }
-                Err(e) => {
-                    // Fail only if we are executing an action command
-                    if !self.base.cmd.is_action_command() {
-                        trace!(target: &self.base.name, "TCP stream error without cmd ({}): {}", tcp_stream_trials, e.to_string());
-                    } else {
-                        tcp_stream_trials += 1;
-                        debug!(target: &self.base.name, "TCP stream error ({}): {}", tcp_stream_trials, e.to_string());
+                match server_result {
+                    Ok(tcp_stream) => {
+                        // Reset the trial count of the outer-most loop on success
+                        tcp_stream_trials = 0;
+                        self.base.name = self.name(stream_id);
+                        stream_id += 1;
+
+                        debug!(target: &self.base.name, "TCP stream connected");
+
                         if self.base.cmd == Command::Timeout {
-                            if tcp_stream_trials >= MAX_CONNECT_TIMEOUT_TRIALS {
-                                debug!(target: &self.base.name, "Timeout command succeeded");
-                                self.base.report_cmd_result(None).unwrap_or(());
-                                tcp_stream_trials = 0;
-                            }
-                        } else if tcp_stream_trials >= MAX_STREAM_CONNECT_TRIALS {
-                            error!(target: &self.base.name, "TCP stream connect timed out");
+                            debug!(target: &self.base.name, "Timeout command failed");
+                            self.base.reset_command();
                             failed = true;
                             break;
                         }
-                    }
-                    thread::sleep(WAIT_STREAM_CONNECT);
-                }
-            }
 
-            if let Err(RecvTimeoutError::Disconnected) = self.base.get_command() {
-                break;
-            }
-            if self.base.cmd == Command::Quit {
-                debug!(target: &self.base.name, "Received quit command");
-                self.base.reset_command();
-                break;
-            }
-            // Do not timeout if we are executing an action command
-            if self.base.cmd == Command::None {
-                if let Err(CommandError::Fail) = self.base.check_command_timeout() {
-                    failed = true;
+                        self.base.configure_tcp_stream(&tcp_stream);
+
+                        if self.base.proto.proto == Proto::Tcp {
+                            exit = self.run_tcp(&tcp_stream, &mut failed);
+                        } else {
+                            exit = self.run_ssl(&tcp_stream, &mut failed);
+                        }
+
+                        if let Err(e) = tcp_stream.shutdown(Shutdown::Both) {
+                            debug!(target: &self.base.name, "TCP shutdown failed: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        // Fail only if we are executing an action command
+                        if !self.base.cmd.is_action_command() {
+                            trace!(target: &self.base.name, "TCP stream error without cmd ({}): {}", tcp_stream_trials, e.to_string());
+                        } else {
+                            tcp_stream_trials += 1;
+                            trace!(target: &self.base.name, "TCP stream error ({}): {}", tcp_stream_trials, e.to_string());
+                            if self.base.cmd == Command::Timeout {
+                                if tcp_stream_trials >= MAX_CONNECT_TIMEOUT_TRIALS {
+                                    debug!(target: &self.base.name, "Timeout command succeeded");
+                                    self.base.report_cmd_result(None).unwrap_or(());
+                                    tcp_stream_trials = 0;
+                                }
+                            } else if tcp_stream_trials >= MAX_STREAM_CONNECT_TRIALS {
+                                error!(target: &self.base.name, "TCP stream connect timed out");
+                                failed = true;
+                                break;
+                            }
+                        }
+                        thread::sleep(WAIT_STREAM_CONNECT);
+                    }
+                }
+
+                if let Err(RecvTimeoutError::Disconnected) = self.base.get_command() {
                     break;
                 }
-            }
-            if self.base.cmd == Command::KeepAlive {
-                self.base.reset_command();
+
+                if let Err(e) = self.base.execute_non_action_command() {
+                    if e == CommandError::Fail {
+                        failed = true;
+                    }
+                    break;
+                }
             }
         }
 

@@ -48,7 +48,7 @@ pub const READ_TIMEOUT: u64 = CONNECT_TIMEOUT / 5;
 pub const WRITE_TIMEOUT: u64 = CONNECT_TIMEOUT / 5;
 
 pub const WAIT_STREAM_CONNECT: Duration = Duration::from_millis(CONNECT_TIMEOUT / 100);
-pub const MAX_STREAM_CONNECT_TRIALS: i32 = 10;
+pub const MAX_STREAM_CONNECT_TRIALS: i32 = 100;
 
 // For TCP disconnect detection
 const MAX_RECV_DISCONNECT_DETECT: i32 = 4;
@@ -216,6 +216,7 @@ pub enum Command {
     Quit,
     Fail,
     KeepAlive,
+    Ready,
     None,
 }
 
@@ -229,6 +230,7 @@ impl Command {
             Command::Quit => false,
             Command::Fail => false,
             Command::KeepAlive => false,
+            Command::Ready => false,
             Command::None => false,
         }
     }
@@ -244,6 +246,7 @@ impl Display for Command {
             Command::Quit => write!(fmt, "quit"),
             Command::Fail => write!(fmt, "fail"),
             Command::KeepAlive => write!(fmt, "keepalive"),
+            Command::Ready => write!(fmt, "ready"),
             Command::None => write!(fmt, "none"),
         }
     }
@@ -539,6 +542,28 @@ impl TestEndBase {
         Ok(())
     }
 
+    pub fn process_ready_command(&mut self, failed: &mut bool) -> bool {
+        self.cmd_trials = 0;
+        loop {
+            if let Err(RecvTimeoutError::Disconnected) = self.get_command() {
+                break false;
+            }
+            // Return false upon Ready, so process Ready command separately from execute_non_action_command()
+            if self.cmd == Command::Ready {
+                self.report_cmd_result(None).unwrap_or(());
+                break false;
+            }
+            if let Err(e) = self.execute_non_action_command() {
+                if e == CommandError::Fail {
+                    *failed = true;
+                } else if e == CommandError::Disconnect {
+                    break false;
+                }
+                break true;
+            }
+        }
+    }
+
     // TODO: Can we improve code reuse with execute_tcp_command()?
     pub fn execute_ssl_command(&mut self, ssl_stream: &mut SslStream<&TcpStream>) -> CommandResult {
         match self.cmd {
@@ -590,26 +615,15 @@ impl TestEndBase {
                 }
             }
             Command::SslConnectFail => {
-                debug!(target: &self.name, "Received SslConnectFail command while connected");
+                debug!(target: &self.name, "Received SslConnectFail command");
                 return Err(CommandError::Disconnect);
             }
             Command::Timeout => {
-                debug!(target: &self.name, "Received Timeout command while connected");
+                debug!(target: &self.name, "Received Timeout command");
                 return Err(CommandError::Disconnect);
             }
-            Command::Quit => {
-                self.reset_command();
-                return Err(CommandError::Quit);
-            }
-            Command::Fail => {
-                self.reset_command();
-                return Err(CommandError::Fail);
-            }
-            Command::KeepAlive => {
-                self.reset_command();
-            }
-            Command::None => {
-                return self.check_command_timeout();
+            _ => {
+                return self.execute_non_action_command();
             }
         }
         Ok(())
@@ -680,14 +694,24 @@ impl TestEndBase {
                 }
             }
             Command::SslConnectFail => {
-                debug!(target: &self.name, "Received SslConnectFail command while connected");
+                debug!(target: &self.name, "Received SslConnectFail command");
                 return Err(CommandError::Disconnect);
             }
             Command::Timeout => {
-                debug!(target: &self.name, "Received Timeout command while connected");
+                debug!(target: &self.name, "Received Timeout command");
                 return Err(CommandError::Disconnect);
             }
+            _ => {
+                return self.execute_non_action_command();
+            }
+        }
+        Ok(())
+    }
+
+    pub fn execute_non_action_command(&mut self) -> CommandResult {
+        match self.cmd {
             Command::Quit => {
+                debug!(target: &self.name, "Received Quit command");
                 self.reset_command();
                 return Err(CommandError::Quit);
             }
@@ -698,9 +722,13 @@ impl TestEndBase {
             Command::KeepAlive => {
                 self.reset_command();
             }
+            Command::Ready => {
+                self.report_cmd_result(None).unwrap_or(());
+            }
             Command::None => {
                 return self.check_command_timeout();
             }
+            _ => { /* Action commands */ }
         }
         Ok(())
     }

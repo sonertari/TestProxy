@@ -363,10 +363,70 @@ impl Manager {
         }
     }
 
+    fn send_server_ready(&mut self) {
+        self.testend = TestEnd::Server;
+        self.cmd = Command::Ready;
+        self.payload = "".to_string();
+        self.assert = BTreeMap::new();
+        self.mgr2srv_tx.send(Msg::from_cmd(Command::Ready)).unwrap();
+    }
+
+    fn send_client_ready(&mut self) {
+        self.testend = TestEnd::Client;
+        self.cmd = Command::Ready;
+        self.payload = "".to_string();
+        self.assert = BTreeMap::new();
+        self.mgr2cli_tx.send(Msg::from_cmd(Command::Ready)).unwrap();
+    }
+
+    fn wait_children_bootup(&mut self) -> Result<(), ()> {
+        let mut wait_children_bootup_trials = 0;
+        let mut server_ready = false;
+        let mut client_ready = false;
+
+        self.send_server_ready();
+        loop {
+            if self.testend == TestEnd::Server {
+                match self.recv_msg(TestEnd::Server) {
+                    RecvMsgResult::SendCommand => {
+                        server_ready = true;
+                        wait_children_bootup_trials = 0;
+                        self.send_client_ready();
+                    }
+                    _ => {}
+                }
+            }
+
+            if self.testend == TestEnd::Client {
+                match self.recv_msg(TestEnd::Client) {
+                    RecvMsgResult::SendCommand => {
+                        client_ready = true;
+                        wait_children_bootup_trials = 0;
+                    }
+                    _ => {}
+                }
+            }
+
+            if server_ready && client_ready {
+                break Ok(());
+            }
+
+            wait_children_bootup_trials += 1;
+            trace!(target: &self.name, "Wait children bootup loop trial {}", wait_children_bootup_trials);
+            if wait_children_bootup_trials > 10 {
+                error!(target: &self.name, "Wait children bootup loop timed out");
+                self.test_failed = true;
+                // Send quit command to both ends
+                self.mgr2srv_tx.send(Msg::from_cmd(Command::Quit)).unwrap();
+                self.mgr2cli_tx.send(Msg::from_cmd(Command::Quit)).unwrap();
+                break Err(());
+            }
+        }
+    }
+
     fn run_test(&mut self) {
         if let SendCommandResult::Success = self.send_next_command() {
             let mut test_trials = 0;
-            let mut exit = false;
             loop {
                 match self.recv_msg(TestEnd::Server) {
                     RecvMsgResult::SendCommand => {
@@ -378,7 +438,7 @@ impl Manager {
                     RecvMsgResult::Quit => {
                         // Send quit command to the other end
                         self.send_command(&TestEnd::Client, Msg::from_cmd(Command::Quit));
-                        exit = true;
+                        break;
                     }
                     RecvMsgResult::NoMsg => {}
                 }
@@ -392,26 +452,16 @@ impl Manager {
                     RecvMsgResult::Quit => {
                         // Send quit command to the other end
                         self.send_command(&TestEnd::Server, Msg::from_cmd(Command::Quit));
-                        exit = true;
+                        break;
                     }
                     RecvMsgResult::NoMsg => {}
                 }
 
-                if !exit {
-                    test_trials += 1;
-                    trace!(target: &self.name, "Test loop trial {}", test_trials);
-                    if test_trials > MAX_TEST_TRIALS {
-                        error!(target: &self.name, "Test loop timed out");
-                        self.test_failed = true;
-                        exit = true;
-                    }
-                }
-
-                if exit {
-                    // TODO: Consume all messages in the channel and destroy the channel (?)
-                    // Consume any last message in the channels, otherwise mgr thread cannot return (?)
-                    self.recv_msg(TestEnd::Server);
-                    self.recv_msg(TestEnd::Client);
+                test_trials += 1;
+                trace!(target: &self.name, "Test loop trial {}", test_trials);
+                if test_trials > MAX_TEST_TRIALS {
+                    error!(target: &self.name, "Test loop timed out");
+                    self.test_failed = true;
                     break;
                 }
 
@@ -473,7 +523,15 @@ impl Manager {
 
                 self.clone_test(test);
 
-                self.run_test();
+                // Wait until children are up and running before starting tests
+                if let Ok(()) = self.wait_children_bootup() {
+                    self.run_test();
+                }
+
+                // TODO: Consume all messages in the channel and destroy the channel (?)
+                // Consume any last message in the channels, otherwise mgr thread cannot return (?)
+                self.recv_msg(TestEnd::Server);
+                self.recv_msg(TestEnd::Client);
 
                 if let Ok(rv) = server_thread.join() {
                     self.test_failed |= rv;
