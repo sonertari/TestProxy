@@ -552,8 +552,7 @@ impl TestEndBase {
             if self.cmd == Command::Ready {
                 self.report_cmd_result(None).unwrap_or(());
                 break false;
-            }
-            if let Err(e) = self.execute_non_action_command() {
+            } else if let Err(e) = self.execute_non_action_command() {
                 if e == CommandError::Fail {
                     *failed = true;
                 } else if e == CommandError::Disconnect {
@@ -615,12 +614,12 @@ impl TestEndBase {
                 }
             }
             Command::SslConnectFail => {
-                debug!(target: &self.name, "Received SslConnectFail command");
-                return Err(CommandError::Disconnect);
+                error!(target: &self.name, "Received SslConnectFail command while connected");
+                return Err(CommandError::Fail);
             }
             Command::Timeout => {
-                debug!(target: &self.name, "Received Timeout command");
-                return Err(CommandError::Disconnect);
+                error!(target: &self.name, "Received Timeout command while connected");
+                return Err(CommandError::Fail);
             }
             _ => {
                 return self.execute_non_action_command();
@@ -694,12 +693,12 @@ impl TestEndBase {
                 }
             }
             Command::SslConnectFail => {
-                debug!(target: &self.name, "Received SslConnectFail command");
-                return Err(CommandError::Disconnect);
+                error!(target: &self.name, "Received SslConnectFail command while connected");
+                return Err(CommandError::Fail);
             }
             Command::Timeout => {
-                debug!(target: &self.name, "Received Timeout command");
-                return Err(CommandError::Disconnect);
+                error!(target: &self.name, "Received Timeout command while connected");
+                return Err(CommandError::Fail);
             }
             _ => {
                 return self.execute_non_action_command();

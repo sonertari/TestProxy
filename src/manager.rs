@@ -387,23 +387,18 @@ impl Manager {
         self.send_server_ready();
         loop {
             if self.testend == TestEnd::Server {
-                match self.recv_msg(TestEnd::Server) {
-                    RecvMsgResult::SendCommand => {
-                        server_ready = true;
-                        wait_children_bootup_trials = 0;
-                        self.send_client_ready();
-                    }
-                    _ => {}
+                if let RecvMsgResult::SendCommand = self.recv_msg(TestEnd::Server) {
+                    server_ready = true;
+                    wait_children_bootup_trials = 0;
+                    self.send_client_ready();
                 }
             }
 
+            // Do not use else here, send_client_ready() may set testend above
             if self.testend == TestEnd::Client {
-                match self.recv_msg(TestEnd::Client) {
-                    RecvMsgResult::SendCommand => {
-                        client_ready = true;
-                        wait_children_bootup_trials = 0;
-                    }
-                    _ => {}
+                if let RecvMsgResult::SendCommand = self.recv_msg(TestEnd::Client) {
+                    client_ready = true;
+                    wait_children_bootup_trials = 0;
                 }
             }
 
