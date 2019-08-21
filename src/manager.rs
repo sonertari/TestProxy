@@ -470,7 +470,7 @@ impl Manager {
         }
     }
 
-    pub fn run(&mut self, testset: TestSet) {
+    pub fn run(&mut self, testset: TestSet) -> bool {
         for (&cid, testconfig) in testset.configs.iter() {
             self.name = self.name(cid);
 
@@ -528,11 +528,11 @@ impl Manager {
                 self.recv_msg(TestEnd::Server);
                 self.recv_msg(TestEnd::Client);
 
-                if let Ok(rv) = server_thread.join() {
-                    self.test_failed |= rv;
+                if let Ok(failed) = server_thread.join() {
+                    self.test_failed |= failed;
                 }
-                if let Ok(rv) = client_thread.join() {
-                    self.test_failed |= rv;
+                if let Ok(failed) = client_thread.join() {
+                    self.test_failed |= failed;
                 }
 
                 if !self.test_failed && self.state == self.teststate_ids.len() {
@@ -547,6 +547,7 @@ impl Manager {
                 break;
             }
         }
-        debug!(target: &self.name, "Exit");
+        debug!(target: &self.name, "Return {}", self.test_failed);
+        self.test_failed
     }
 }

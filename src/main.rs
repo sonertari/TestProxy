@@ -28,6 +28,7 @@ extern crate serde_json;
 extern crate structopt;
 extern crate time;
 
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::thread;
@@ -62,10 +63,11 @@ fn main() {
 
     warn!("{}", testharnesses.comment);
 
+    let mut rv = 0;
     for (hid, testharness) in testharnesses.testharnesses {
         warn!("Start test harness {}: {}", hid, testharness.comment);
 
-        let mut thread_handles = Vec::new();
+        let mut thread_handles = BTreeMap::new();
         for (sid, ref testset_file) in testharness.testsets {
             debug!("Spawn manager for test set {}", sid);
 
@@ -73,13 +75,22 @@ fn main() {
             let reader = BufReader::new(file);
             let testset: TestSet = serde_json::from_reader(reader).expect(&format!("Cannot load test set file: {}", testset_file));
 
-            thread_handles.push(thread::spawn(move || Manager::new(hid, sid).run(testset)));
+            thread_handles.insert(sid, thread::spawn(move || Manager::new(hid, sid).run(testset)));
         }
 
-        //thread_handles.into_iter().for_each(|t| t.join().unwrap());
-        for t in thread_handles {
-            t.join().unwrap();
+        for (sid, t) in thread_handles {
+            if let Ok(failed) = t.join() {
+                if failed {
+                    error!("Test set h{}.s{} failed", hid, sid);
+                    rv = 1;
+                }
+            }
+        }
+
+        if rv == 1 {
+            error!("Test harness {} failed: {}", hid, testharness.comment);
+            break;
         }
     }
-    std::process::exit(0);
+    std::process::exit(rv);
 }
