@@ -12,18 +12,20 @@ Proxy servers accept connections from a client on the one side and forward the
 packets between that client and a server on the other side. So, TestProxy acts 
 as both the client and the server to simulate this environment. It starts a 
 manager thread for the tests, and in turn the manager thread starts a client 
-and a server thread for each test. The manager sends commands to the clients 
-and the servers to execute the tests it is started for.
+and a server thread for each test. The manager sends commands to these 
+client/servers pairs to execute the tests it is started for.
 
-TestProxy test steps are composed of a command with a payload. For example, a 
-test can instruct a client to send an HTTP request to the proxy under test 
-using the `send` command with a payload such as `GET / HTTP/1.1\r\nHost: 
-example.com\r\n\r\n`. And the next state of the same test can instruct the 
-corresponding server to receive this HTTP request from the proxy using the 
-`recv` command with the same payload `GET / HTTP/1.1\r\nHost: 
+![Operation Diagram](examples/OperationDiagram.png)
+
+TestProxy test steps are composed of a test end, a command, and a payload. For 
+example, a test can instruct a client to send an HTTP request to the proxy 
+under test using the `send` command with a payload such as `GET / 
+HTTP/1.1\r\nHost: example.com\r\n\r\n`. And the next step of the same test can 
+instruct the corresponding server to receive this HTTP request from the proxy 
+using the `recv` command with the same payload `GET / HTTP/1.1\r\nHost: 
 example.com\r\n\r\n`, assuming the proxy is not expected to modify the 
-payload. These send and receive steps of the tests are called `states`, and 
-are executed in the order they are numbered, as below.
+payload. These send and receive steps of the test are called `states`, and are 
+executed in the order they are numbered, as below.
 
 ```
 "states": {
@@ -36,15 +38,15 @@ are executed in the order they are numbered, as below.
     "testend": "server",
     "cmd": "recv",
     "payload": "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n",
-  },
+  }
 }
 ```
 
-This test becomes successful if both of these commands succeed, but the test 
-fails if either of the commands fails or the received payload does not match 
-the expected payload of the `recv` command. Such tests may contain assertions 
-too, so see the sample tests under the `examples` folder in the sources for 
-such assertions.
+This test becomes successful if both of these commands succeed, but it fails 
+if either of the commands fails or the received payload does not match the 
+expected payload of the `recv` command. Such tests may contain assertions too, 
+see the sample tests under the `examples` folder in the sources for such 
+assertions.
 
 Such tests can be saved in a JSON file to form a test set. The protocol and 
 test ends of the test set are configured in the beginning of the file. The 
@@ -127,7 +129,7 @@ the testproxy executable should be started with using the `-f` option. For
 example, the following is the screenshot of testproxy output when started with 
 a `testharness.json` file and the debug level of 3 (which is the default):
 
-![Mode of Operation Diagram](examples/testproxy.png)
+![Sample Output](examples/SampleOutput.png)
 
 In summary, the main test harnesses file may be composed of multiple test 
 harnesses. Test harnesses may be divided into multiple test sets, which may be 
