@@ -8,22 +8,22 @@ https://github.com/sonertari/TestProxy
 TestProxy is designed to be used for testing any program which runs in between 
 a client and a server, such as proxy servers.
 
-Proxy servers accept connections from a client on the one side and forwards 
-the packets between that client and a server on the other side. So, TestProxy 
-acts as both the client and the server to simulate this environment. It starts 
-a manager thread for the tests, and in turn the manager thread starts a client 
-and a server thread. The manager sends commands to the client and the server 
-to execute the tests it is started for.
+Proxy servers accept connections from a client on the one side and forward the 
+packets between that client and a server on the other side. So, TestProxy acts 
+as both the client and the server to simulate this environment. It starts a 
+manager thread for the tests, and in turn the manager thread starts a client 
+and a server thread for each test. The manager sends commands to the clients 
+and the servers to execute the tests it is started for.
 
-TestProxy tests are composed of a command and a payload. For example, a test 
-can instruct a client to send an HTTP request to the proxy under test using 
-the `send` command with a payload such as `GET / HTTP/1.1\r\nHost: 
-example.com\r\n\r\n`. And the same test can instruct the corresponding server 
-to receive this HTTP request from the proxy using the `recv` command with the 
-same payload `GET / HTTP/1.1\r\nHost: example.com\r\n\r\n`, assuming the proxy 
-is not expected to modify the payload. These send and receive steps of the 
-tests are called `states`, and are executed in the order they are numbered, as 
-below.
+TestProxy test steps are composed of a command with a payload. For example, a 
+test can instruct a client to send an HTTP request to the proxy under test 
+using the `send` command with a payload such as `GET / HTTP/1.1\r\nHost: 
+example.com\r\n\r\n`. And the next state of the same test can instruct the 
+corresponding server to receive this HTTP request from the proxy using the 
+`recv` command with the same payload `GET / HTTP/1.1\r\nHost: 
+example.com\r\n\r\n`, assuming the proxy is not expected to modify the 
+payload. These send and receive steps of the tests are called `states`, and 
+are executed in the order they are numbered, as below.
 
 ```
 "states": {
@@ -49,10 +49,12 @@ such assertions.
 Such tests can be saved in a JSON file to form a test set. The protocol and 
 test ends of the test set are configured in the beginning of the file. The 
 test set can be executed using multiple configuration. For example, the 
-following test set specifies two configuration, which means that the tests 
-will be executed twice for each configuration. Note that the first 
-configuration is for TCP and the second is for SSL tests, and that client and 
-server ports are different in each configuration.
+following test set specifies two configuration, which means that the tests in 
+the test set will be executed twice for each configuration. Note that the 
+first configuration is for TCP and the second is for SSL tests, and that 
+the client and the server ports are different in each configuration. The proxy 
+under test should have been configured to accept connections on those client 
+ports and to forward packets to those server ports.
 
 ```
 "comment": "Tests for HTTP request/response",
@@ -102,8 +104,8 @@ server ports are different in each configuration.
 }
 ```
 
-Furthermore, such test sets can be bundled to form a test harness. A sample 
-test harness may be as follows:
+Furthermore, such test sets can be bundled to form a test harness. For 
+example, a sample test harness may be as follows:
 
 ```
 {
@@ -120,22 +122,21 @@ test harness may be as follows:
 }
 ```
 
-Multiple test harnesses can be defined in a JSON file. This is the file that 
+One or more test harnesses can be saved in a JSON file. This is the file that 
 the testproxy executable should be started with using the `-f` option. For 
 example, the following is the screenshot of testproxy output when started with 
 a `testharness.json` file and the debug level of 3 (which is the default):
 
-![Mode of Operation 
-Diagram](examples/testproxy.png)
+![Mode of Operation Diagram](examples/testproxy.png)
 
 In summary, the main test harnesses file may be composed of multiple test 
 harnesses. Test harnesses may be divided into multiple test sets, which may be 
 composed of tests defined in a test set file. Each test may contain multiple 
-states (or steps), and may contain assertions.
+steps called states, and may contain assertions.
 
 TestProxy runs multithreaded. Test harnesses are run serially, starting from 
-the first one. But TestProxy starts a manager thread for each test set in test 
-harnesses. Manager thread runs the tests in its test set serially, but it 
+the first one, but TestProxy starts a manager thread for each test set in the 
+test harnesses. Manager thread runs the tests in its test set serially, but it 
 starts a client and a server thread for each test in the test set. Manager 
 thread communicates with those client and server threads over messaging 
 channels, and expects execution results back.
