@@ -13,14 +13,14 @@ packets between that client and a server on the other side. So, TestProxy acts
 as both the client and the server to simulate this environment. It starts a 
 manager thread for the tests, and in turn the manager thread starts a client 
 and a server thread for each test. The manager sends commands to these 
-client/servers pairs to execute the tests it is started for.
+client/server pairs to execute the tests it is started for.
 
 ![Operation Diagram](examples/OperationDiagram.png)
 
 TestProxy test steps are composed of a test end, a command, and a payload. For 
 example, a test can instruct a client to send an HTTP request to the proxy 
 under test using the `send` command with a payload such as `GET / 
-HTTP/1.1\r\nHost: example.com\r\n\r\n`. And the next step of the same test can 
+HTTP/1.1\r\nHost: example.com\r\n\r\n`. The next step of the same test can 
 instruct the corresponding server to receive this HTTP request from the proxy 
 using the `recv` command with the same payload `GET / HTTP/1.1\r\nHost: 
 example.com\r\n\r\n`, assuming the proxy is not expected to modify the 
