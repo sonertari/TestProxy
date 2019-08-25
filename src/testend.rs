@@ -750,27 +750,24 @@ impl TestEndBase {
         debug!(target: &self.name, "SSL stream servername {}", ssl.servername(NameType::HOST_NAME).unwrap_or(""));
         //debug!(target: &self.name, "SSL stream time: {:#?}, timeout: {:#?}", ssl.session().unwrap().time(), ssl.session().unwrap().timeout());
 
-        match ssl.peer_certificate() {
-            Some(peer_cert) => {
-                // TODO: Check why all peer.cert entry methods give the same entries
-                let pcv: Vec<String> = peer_cert.issuer_name().entries().map(|x| x.data().as_utf8().unwrap().to_string()).collect();
-                let peer_certificate = pcv.join(", ");
-                debug!(target: &self.name, "SSL stream peer_certificate: {}", peer_certificate);
-                debug!(target: &self.name, "SSL stream peer_certificate not_before: {}", peer_cert.not_before());
-                debug!(target: &self.name, "SSL stream peer_certificate not_after: {}", peer_cert.not_after());
-                //debug!(target: &self.name, "SSL stream peer_certificate serial_number: {:#?}", peer_cert.serial_number().to_bn().unwrap());
+        if let Some(peer_cert) = ssl.peer_certificate() {
+            // TODO: Check why all peer.cert entry methods give the same entries
+            let pcv: Vec<String> = peer_cert.issuer_name().entries().map(|x| x.data().as_utf8().unwrap().to_string()).collect();
+            let peer_certificate = pcv.join(", ");
+            debug!(target: &self.name, "SSL stream peer_certificate: {}", peer_certificate);
+            debug!(target: &self.name, "SSL stream peer_certificate not_before: {}", peer_cert.not_before());
+            debug!(target: &self.name, "SSL stream peer_certificate not_after: {}", peer_cert.not_after());
+            //debug!(target: &self.name, "SSL stream peer_certificate serial_number: {:#?}", peer_cert.serial_number().to_bn().unwrap());
 
-                if self.assert.contains_key("peer_certificate") {
-                    failed |= self.assert_str("peer_certificate", &peer_certificate);
-                }
-                if self.assert.contains_key("peer_certificate_not_before") {
-                    failed |= self.assert_date("peer_certificate_not_before", peer_cert.not_before());
-                }
-                if self.assert.contains_key("peer_certificate_not_after") {
-                    failed |= self.assert_date("peer_certificate_not_after", peer_cert.not_after());
-                }
+            if self.assert.contains_key("peer_certificate") {
+                failed |= self.assert_str("peer_certificate", &peer_certificate);
             }
-            None => {}
+            if self.assert.contains_key("peer_certificate_not_before") {
+                failed |= self.assert_date("peer_certificate_not_before", peer_cert.not_before());
+            }
+            if self.assert.contains_key("peer_certificate_not_after") {
+                failed |= self.assert_date("peer_certificate_not_after", peer_cert.not_after());
+            }
         }
 
         if self.assert.contains_key("ssl_proto_version") {
