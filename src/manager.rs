@@ -276,6 +276,7 @@ impl Manager {
         }
     }
 
+    /// Sends the next command in the current test if any, or sends Quit otherwise
     fn send_next_command(&mut self) -> SendCommandResult {
         if self.state < self.teststate_ids.len() {
             let state = &self.teststate_ids[&(self.state as i32)];
@@ -297,6 +298,7 @@ impl Manager {
         SendCommandResult::Success
     }
 
+    /// Receives execution results from test ends, and decides what to do next
     fn recv_msg(&mut self, testend: TestEnd) -> RecvMsgResult {
         let rx;
         match testend {
@@ -379,6 +381,8 @@ impl Manager {
         self.mgr2cli_tx.send(Msg::from_cmd(Command::Ready)).unwrap();
     }
 
+    /// Waits test ends to be up and running before starting tests
+    /// So sends a Ready command to each test end and receives replies from them
     fn wait_children_bootup(&mut self) -> Result<(), ()> {
         let mut wait_children_bootup_trials = 0;
         let mut server_ready = false;
@@ -419,7 +423,12 @@ impl Manager {
         }
     }
 
+    /// Sends test commands to test ends and receives execution results
+    /// We wait for messages from both test end at all times,
+    /// not just from the test end executing the current test command,
+    /// because the other test end may decide to quit the test and send a quit message
     fn run_test(&mut self) {
+        // Send the first step of the test before starting to loop
         if let SendCommandResult::Success = self.send_next_command() {
             let mut test_trials = 0;
             loop {
@@ -470,6 +479,8 @@ impl Manager {
         }
     }
 
+    /// Starts the threads for client and server test ends, clones the current test, and runs it
+    /// Consumes the final messages on the mpsc channels of test ends and joins the test end threads before exiting
     pub fn run(&mut self, testset: TestSet) -> bool {
         for (&cid, testconfig) in testset.configs.iter() {
             self.name = self.name(cid);
@@ -516,10 +527,9 @@ impl Manager {
                 let client_thread = thread::spawn(move || client.run());
                 debug!(target: &self.name, "Spawned client for test {}", tid);
 
-                self.clone_test(test);
-
                 // Wait until children are up and running before starting tests
                 if let Ok(()) = self.wait_children_bootup() {
+                    self.clone_test(test);
                     self.run_test();
                 }
 

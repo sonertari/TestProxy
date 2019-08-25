@@ -36,6 +36,7 @@ use regex::Regex;
 use serde::{de, Deserialize, Deserializer};
 use serde_json::Value;
 
+/// mpsc channel receive timeout
 pub const CHANNEL_TIMEOUT: Duration = Duration::from_millis(10);
 
 // Default TCP timeouts in millis
@@ -290,6 +291,7 @@ pub enum RecvMsgResult {
     NoMsg,
 }
 
+/// The message struct passed on mpsc channels
 pub struct Msg {
     pub cmd: Command,
     pub payload: String,
@@ -315,6 +317,8 @@ pub enum CommandError {
     Disconnect,
 }
 
+/// Base struct for Client and Server structs
+/// We don't use trait instead of struct here, because traits do not have data
 pub struct TestEndBase {
     pub name: String,
     pub ip: String,
@@ -468,6 +472,7 @@ impl TestEndBase {
         self.disconnect_detect_trials = 0;
     }
 
+    /// Receives a command message from an mpsc channel, times out if there are no messages
     pub fn get_command(&mut self) -> Result<(), RecvTimeoutError> {
         match self.rx.lock().unwrap().recv_timeout(CHANNEL_TIMEOUT) {
             Ok(msg) => {
@@ -481,6 +486,7 @@ impl TestEndBase {
                 debug!(target: &self.name, "Msg from mgr ({}): ({}, {}, {:?})", self.payload.len(), self.cmd, self.payload, self.assert);
             }
             Err(e) => {
+                // Timeout error is fine, and the expected error most of the time
                 if e != RecvTimeoutError::Timeout {
                     error!(target: &self.name, "Recv error: {}", e.to_string());
                 }
@@ -490,10 +496,12 @@ impl TestEndBase {
         Ok(())
     }
 
-    // TODO: Should all tx's use this function?
+    /// Reports execution result of the current command to manager
     pub fn report_cmd_result(&mut self, ssl_stream: Option<&mut SslStream<&TcpStream>>) -> Result<(), ()> {
+        // TODO: Should all tx's use this function?
         let mut rv = Ok(());
 
+        // We support assertions on SSL/TLS connections only
         if let Some(ssl_stream) = ssl_stream {
             if self.assert_ssl_config(ssl_stream) {
                 // Signal assertion failure to mgr by clearing all assertions
@@ -502,6 +510,7 @@ impl TestEndBase {
             }
         }
 
+        // Returned payload may be different from the original payload for Recv command only
         let payload;
         if self.cmd == Command::Recv {
             if !self.payload.eq(&self.recv_payload) {
@@ -519,6 +528,7 @@ impl TestEndBase {
         rv
     }
 
+    /// Decides whether it is time to report the execution result of recv command to manager, and reports the result if it is time
     fn process_recv_payload(&mut self, ssl_stream: Option<&mut SslStream<&TcpStream>>) -> Result<(), ()> {
         self.recv_trials += 1;
         // ATTENTION: Wait for any extra data even after payload matches exactly, because the proxy should not send anything else
@@ -532,6 +542,8 @@ impl TestEndBase {
         self.report_cmd_result(ssl_stream)
     }
 
+    /// Checks if we have waited long enough for a command from manager before giving up
+    /// This is used if the test end is not executing any command (i.e. cmd is None)
     pub fn check_command_timeout(&mut self) -> CommandResult {
         self.cmd_trials += 1;
         trace!(target: &self.name, "Command loop {}", self.cmd_trials);
@@ -542,6 +554,8 @@ impl TestEndBase {
         Ok(())
     }
 
+    /// Waits for a Ready command from manager, and replies it
+    /// Ready command is used by manager to make sure test ends are up and running before starting tests
     pub fn process_ready_command(&mut self, failed: &mut bool) -> bool {
         self.cmd_trials = 0;
         loop {
@@ -707,6 +721,7 @@ impl TestEndBase {
         Ok(())
     }
 
+    /// Executes commands which do not try to connect/send/recv
     pub fn execute_non_action_command(&mut self) -> CommandResult {
         match self.cmd {
             Command::Quit => {
@@ -890,8 +905,9 @@ pub fn str2sslversion(s: &str) -> SslVersion {
     }
 }
 
-// TODO: Rust openssl lib does not have OBJ_sn2nid() equivalent, what is the best way to find nid by name?
+/// Finds nid of an ecdh curve
 pub fn ssl_nid_by_name(s: &str) -> i32 {
+    // TODO: Rust openssl lib does not have OBJ_sn2nid() equivalent, what is the best way to find nid by name?
     let mut nid = 0; // UNDEF
     for i in 0..1200 {
         match Nid::from_raw(i).short_name() {
