@@ -57,11 +57,14 @@ impl Manager {
         let (cli2mgr_tx, cli2mgr_rx) = mpsc::channel();
         let (srv2mgr_tx, srv2mgr_rx) = mpsc::channel();
 
-        // ATTENTION: Init these channels in this new() method, and use Arc/Mutex
-        // Otherwise, Server/Manager threads do not return, hence join() call gets stuck sometimes
-        // TODO: Check why Server/Manager threads do not join() if these channels are init in run() and without Arc/Mutex
-        // Use Arc/Mutex to pass receivers to server and client threads
-        // We create these channels here for initialization purposes only
+        // ATTENTION: Create these channels in Manager, and use Arc/Mutex
+        // We have tried and failed multiple times to create those channels in Server/Client
+        // to avoid using Arc/Mutex with rx channel
+        // Because if we do that, sometimes Server/Client threads do not return, hence join() call gets stuck
+        // TODO: Check again why Server/Client threads do not join() if these channels are created in Server/Client without Arc/Mutex
+        // So, use Arc/Mutex to pass receivers to server and client threads
+        // But note that we create the following channels here for initialization purposes only
+        // The actual channels we use are created in the run() function of Manager
         let (mgr2cli_tx, mgr2cli_rx) = mpsc::channel();
         let mgr2cli_rx = Arc::new(Mutex::new(mgr2cli_rx));
 

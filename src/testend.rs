@@ -36,8 +36,8 @@ use regex::Regex;
 use serde::{de, Deserialize, Deserializer};
 use serde_json::Value;
 
-/// mpsc channel receive timeout
-pub const CHANNEL_TIMEOUT: Duration = Duration::from_millis(10);
+/// mpsc channel receive timeout, no need to wait for long timeout periods
+pub const CHANNEL_TIMEOUT: Duration = Duration::from_millis(1);
 
 // Default TCP timeouts in millis
 pub const CONNECT_TIMEOUT: u64 = 1000;
