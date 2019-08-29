@@ -269,3 +269,31 @@ impl Server {
         failed
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use testend::TestConfig;
+    use manager::configure_proto;
+
+    #[test]
+    fn test_name() {
+        let (srv2mgr_tx, _srv2mgr_rx) = mpsc::channel();
+        let (_mgr2srv_tx, mgr2srv_rx) = mpsc::channel();
+        let mgr2srv_rx = Arc::new(Mutex::new(mgr2srv_rx));
+
+        let mut testconfig = TestConfig { proto: BTreeMap::new(), client: BTreeMap::new(), server: BTreeMap::new() };
+        let proto = configure_proto(&testconfig);
+
+        testconfig.server.insert("ip".to_string(), "".to_string());
+        testconfig.server.insert("port".to_string(), "".to_string());
+
+        let server = Server::new(1, 1, 1, 1, srv2mgr_tx.clone(), Arc::clone(&mgr2srv_rx),
+                                     proto.clone(), testconfig.server.clone());
+
+        assert_eq!(server.base.name, "SRV.h1.s1.c1.t1.0");
+        assert_eq!(server.name(1), "SRV.h1.s1.c1.t1.1");
+        // the name() method does not update the name field
+        assert_eq!(server.base.name, "SRV.h1.s1.c1.t1.0");
+    }
+}

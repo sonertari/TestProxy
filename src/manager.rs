@@ -98,138 +98,6 @@ impl Manager {
         format!("MGR.h{}.s{}.c{}", self.hid, self.sid, cid)
     }
 
-    fn configure_proto(&self, testconfig: &TestConfig) -> ProtoConfig {
-        let mut proto = Proto::Tcp;
-
-        let mut connect_timeout = CONNECT_TIMEOUT;
-        if testconfig.proto.contains_key("connect_timeout") {
-            connect_timeout = testconfig.proto["connect_timeout"].parse().expect("Cannot parse connect_timeout");
-        }
-
-        let mut read_timeout = READ_TIMEOUT;
-        if testconfig.proto.contains_key("read_timeout") {
-            read_timeout = testconfig.proto["read_timeout"].parse().expect("Cannot parse read_timeout");
-        }
-
-        let mut write_timeout = WRITE_TIMEOUT;
-        if testconfig.proto.contains_key("write_timeout") {
-            write_timeout = testconfig.proto["write_timeout"].parse().expect("Cannot parse write_timeout");
-        }
-
-        let mut ip_ttl = 15;
-        if testconfig.proto.contains_key("ip_ttl") {
-            ip_ttl = testconfig.proto["ip_ttl"].parse().expect("Cannot parse ip_ttl");
-        }
-
-        let mut tcp_nodelay = true;
-        if testconfig.proto.contains_key("tcp_nodelay") {
-            tcp_nodelay = testconfig.proto["tcp_nodelay"].eq("yes");
-        }
-
-        let mut crt = "".to_string();
-        let mut key = "".to_string();
-        let mut verify_peer = false;
-        let mut use_sni = false;
-        let mut sni_servername = "localhost".to_string();
-        let mut verify_hostname = false;
-        let mut ciphers = "ALL:-aNULL".to_string();
-        let mut min_proto_version = "ssl3".to_string();
-        let mut max_proto_version = "tls13".to_string();
-        let mut no_ssl2 = false;
-        let mut no_ssl3 = false;
-        let mut no_tls10 = false;
-        let mut no_tls11 = false;
-        let mut no_tls12 = false;
-        let mut no_tls13 = false;
-        let mut compression = false;
-        // TODO: Check why no other ecdh curve works
-        let mut ecdhcurve = "prime256v1".to_string();
-        let mut set_ecdhcurve = false;
-
-        if testconfig.proto.contains_key("proto") && testconfig.proto["proto"].eq("ssl") {
-            proto = Proto::Ssl;
-
-            if testconfig.proto.contains_key("crt") {
-                crt = testconfig.proto["crt"].clone();
-            }
-            if testconfig.proto.contains_key("key") {
-                key = testconfig.proto["key"].clone();
-            }
-            if testconfig.proto.contains_key("verify_peer") {
-                verify_peer = testconfig.proto["verify_peer"].eq("yes");
-            }
-            if testconfig.proto.contains_key("use_sni") {
-                use_sni = testconfig.proto["use_sni"].eq("yes");
-            }
-            if testconfig.proto.contains_key("sni_servername") {
-                sni_servername = testconfig.proto["sni_servername"].clone();
-            }
-            if testconfig.proto.contains_key("verify_hostname") {
-                verify_hostname = testconfig.proto["verify_hostname"].eq("yes");
-            }
-            if testconfig.proto.contains_key("ciphers") {
-                ciphers = testconfig.proto["ciphers"].clone();
-            }
-            if testconfig.proto.contains_key("min_proto_version") {
-                min_proto_version = testconfig.proto["min_proto_version"].clone();
-            }
-            if testconfig.proto.contains_key("max_proto_version") {
-                max_proto_version = testconfig.proto["max_proto_version"].clone();
-            }
-            if testconfig.proto.contains_key("no_ssl2") {
-                no_ssl2 = testconfig.proto["no_ssl2"].eq("yes");
-            }
-            if testconfig.proto.contains_key("no_ssl3") {
-                no_ssl3 = testconfig.proto["no_ssl3"].eq("yes");
-            }
-            if testconfig.proto.contains_key("no_tls10") {
-                no_tls10 = testconfig.proto["no_tls10"].eq("yes");
-            }
-            if testconfig.proto.contains_key("no_tls11") {
-                no_tls11 = testconfig.proto["no_tls11"].eq("yes");
-            }
-            if testconfig.proto.contains_key("no_tls12") {
-                no_tls12 = testconfig.proto["no_tls12"].eq("yes");
-            }
-            if testconfig.proto.contains_key("no_tls13") {
-                no_tls13 = testconfig.proto["no_tls13"].eq("yes");
-            }
-            if testconfig.proto.contains_key("compression") {
-                compression = testconfig.proto["compression"].eq("yes");
-            }
-            if testconfig.proto.contains_key("ecdhcurve") {
-                ecdhcurve = testconfig.proto["ecdhcurve"].clone();
-                set_ecdhcurve = true;
-            }
-        }
-        ProtoConfig {
-            proto,
-            connect_timeout,
-            read_timeout,
-            write_timeout,
-            ip_ttl,
-            tcp_nodelay,
-            crt,
-            key,
-            verify_peer,
-            use_sni,
-            sni_servername,
-            verify_hostname,
-            ciphers,
-            min_proto_version,
-            max_proto_version,
-            no_ssl2,
-            no_ssl3,
-            no_tls10,
-            no_tls11,
-            no_tls12,
-            no_tls13,
-            compression,
-            ecdhcurve,
-            set_ecdhcurve,
-        }
-    }
-
     fn clone_test(&mut self, test: &Value) {
         self.teststates.clear();
         self.teststate_ids.clear();
@@ -427,9 +295,9 @@ impl Manager {
     }
 
     /// Sends test commands to test ends and receives execution results
-    /// We wait for messages from both test end at all times,
+    /// We wait for messages from both test ends at all times,
     /// not just from the test end executing the current test command,
-    /// because the other test end may decide to quit the test and send a quit message
+    /// because the other test end may decide to quit the test hence may send a quit message
     fn run_test(&mut self) {
         // Send the first step of the test before starting to loop
         if let SendCommandResult::Success = self.send_next_command() {
@@ -488,7 +356,7 @@ impl Manager {
         for (&cid, testconfig) in testset.configs.iter() {
             self.name = self.name(cid);
 
-            let proto = self.configure_proto(&testconfig);
+            let proto = configure_proto(&testconfig);
             warn!(target: &self.name, "Start test set {} for test config {}: {}", self.sid, cid, testset.comment);
 
             for (&tid, test) in testset.tests.iter() {
@@ -562,5 +430,237 @@ impl Manager {
         }
         debug!(target: &self.name, "Return {}", self.test_failed);
         self.test_failed
+    }
+}
+
+pub fn configure_proto(testconfig: &TestConfig) -> ProtoConfig {
+    let mut proto = Proto::Tcp;
+
+    let mut connect_timeout = CONNECT_TIMEOUT;
+    if testconfig.proto.contains_key("connect_timeout") {
+        connect_timeout = testconfig.proto["connect_timeout"].parse().expect("Cannot parse connect_timeout");
+    }
+
+    let mut read_timeout = READ_TIMEOUT;
+    if testconfig.proto.contains_key("read_timeout") {
+        read_timeout = testconfig.proto["read_timeout"].parse().expect("Cannot parse read_timeout");
+    }
+
+    let mut write_timeout = WRITE_TIMEOUT;
+    if testconfig.proto.contains_key("write_timeout") {
+        write_timeout = testconfig.proto["write_timeout"].parse().expect("Cannot parse write_timeout");
+    }
+
+    let mut ip_ttl = 15;
+    if testconfig.proto.contains_key("ip_ttl") {
+        ip_ttl = testconfig.proto["ip_ttl"].parse().expect("Cannot parse ip_ttl");
+    }
+
+    let mut tcp_nodelay = true;
+    if testconfig.proto.contains_key("tcp_nodelay") {
+        tcp_nodelay = testconfig.proto["tcp_nodelay"].eq("yes");
+    }
+
+    let mut crt = "".to_string();
+    let mut key = "".to_string();
+    let mut verify_peer = false;
+    let mut use_sni = false;
+    let mut sni_servername = "localhost".to_string();
+    let mut verify_hostname = false;
+    let mut ciphers = "ALL:-aNULL".to_string();
+    let mut min_proto_version = "ssl3".to_string();
+    let mut max_proto_version = "tls13".to_string();
+    let mut no_ssl2 = false;
+    let mut no_ssl3 = false;
+    let mut no_tls10 = false;
+    let mut no_tls11 = false;
+    let mut no_tls12 = false;
+    let mut no_tls13 = false;
+    let mut compression = false;
+    // TODO: Check why no other ecdh curve works
+    let mut ecdhcurve = "prime256v1".to_string();
+    let mut set_ecdhcurve = false;
+
+    if testconfig.proto.contains_key("proto") && testconfig.proto["proto"].eq("ssl") {
+        proto = Proto::Ssl;
+
+        if testconfig.proto.contains_key("crt") {
+            crt = testconfig.proto["crt"].clone();
+        }
+        if testconfig.proto.contains_key("key") {
+            key = testconfig.proto["key"].clone();
+        }
+        if testconfig.proto.contains_key("verify_peer") {
+            verify_peer = testconfig.proto["verify_peer"].eq("yes");
+        }
+        if testconfig.proto.contains_key("use_sni") {
+            use_sni = testconfig.proto["use_sni"].eq("yes");
+        }
+        if testconfig.proto.contains_key("sni_servername") {
+            sni_servername = testconfig.proto["sni_servername"].clone();
+        }
+        if testconfig.proto.contains_key("verify_hostname") {
+            verify_hostname = testconfig.proto["verify_hostname"].eq("yes");
+        }
+        if testconfig.proto.contains_key("ciphers") {
+            ciphers = testconfig.proto["ciphers"].clone();
+        }
+        if testconfig.proto.contains_key("min_proto_version") {
+            min_proto_version = testconfig.proto["min_proto_version"].clone();
+        }
+        if testconfig.proto.contains_key("max_proto_version") {
+            max_proto_version = testconfig.proto["max_proto_version"].clone();
+        }
+        if testconfig.proto.contains_key("no_ssl2") {
+            no_ssl2 = testconfig.proto["no_ssl2"].eq("yes");
+        }
+        if testconfig.proto.contains_key("no_ssl3") {
+            no_ssl3 = testconfig.proto["no_ssl3"].eq("yes");
+        }
+        if testconfig.proto.contains_key("no_tls10") {
+            no_tls10 = testconfig.proto["no_tls10"].eq("yes");
+        }
+        if testconfig.proto.contains_key("no_tls11") {
+            no_tls11 = testconfig.proto["no_tls11"].eq("yes");
+        }
+        if testconfig.proto.contains_key("no_tls12") {
+            no_tls12 = testconfig.proto["no_tls12"].eq("yes");
+        }
+        if testconfig.proto.contains_key("no_tls13") {
+            no_tls13 = testconfig.proto["no_tls13"].eq("yes");
+        }
+        if testconfig.proto.contains_key("compression") {
+            compression = testconfig.proto["compression"].eq("yes");
+        }
+        if testconfig.proto.contains_key("ecdhcurve") {
+            ecdhcurve = testconfig.proto["ecdhcurve"].clone();
+            set_ecdhcurve = true;
+        }
+    }
+    ProtoConfig {
+        proto,
+        connect_timeout,
+        read_timeout,
+        write_timeout,
+        ip_ttl,
+        tcp_nodelay,
+        crt,
+        key,
+        verify_peer,
+        use_sni,
+        sni_servername,
+        verify_hostname,
+        ciphers,
+        min_proto_version,
+        max_proto_version,
+        no_ssl2,
+        no_ssl3,
+        no_tls10,
+        no_tls11,
+        no_tls12,
+        no_tls13,
+        compression,
+        ecdhcurve,
+        set_ecdhcurve,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_name() {
+        let m = Manager::new(1, 1);
+        assert_eq!(m.name, "MGR.h1.s1.c0");
+        assert_eq!(m.name(1), "MGR.h1.s1.c1");
+        // the name() method does not update the name field
+        assert_eq!(m.name, "MGR.h1.s1.c0");
+    }
+
+    #[test]
+    fn test_configure_proto() {
+        let mut tc = TestConfig { proto: BTreeMap::new(), client: BTreeMap::new(), server: BTreeMap::new() };
+
+        // Test defaults first
+        let proto = configure_proto(&tc);
+
+        assert_eq!(proto.proto, Proto::Tcp);
+        assert_eq!(proto.connect_timeout, CONNECT_TIMEOUT);
+        assert_eq!(proto.read_timeout, READ_TIMEOUT);
+        assert_eq!(proto.write_timeout, WRITE_TIMEOUT);
+        assert_eq!(proto.ip_ttl, 15);
+        assert_eq!(proto.tcp_nodelay, true);
+        assert_eq!(proto.crt, "".to_string());
+        assert_eq!(proto.key, "".to_string());
+        assert_eq!(proto.verify_peer, false);
+        assert_eq!(proto.use_sni, false);
+        assert_eq!(proto.sni_servername, "localhost".to_string());
+        assert_eq!(proto.verify_hostname, false);
+        assert_eq!(proto.ciphers, "ALL:-aNULL".to_string());
+        assert_eq!(proto.min_proto_version, "ssl3".to_string());
+        assert_eq!(proto.max_proto_version, "tls13".to_string());
+        assert_eq!(proto.no_ssl2, false);
+        assert_eq!(proto.no_ssl3, false);
+        assert_eq!(proto.no_tls10, false);
+        assert_eq!(proto.no_tls11, false);
+        assert_eq!(proto.no_tls12, false);
+        assert_eq!(proto.no_tls13, false);
+        assert_eq!(proto.compression, false);
+        assert_eq!(proto.ecdhcurve, "prime256v1".to_string());
+        assert_eq!(proto.set_ecdhcurve, false);
+
+        // Test non-default values now
+        tc.proto.insert("proto".to_string(), "ssl".to_string());
+        tc.proto.insert("connect_timeout".to_string(), "1".to_string());
+        tc.proto.insert("read_timeout".to_string(), "1".to_string());
+        tc.proto.insert("write_timeout".to_string(), "1".to_string());
+        tc.proto.insert("ip_ttl".to_string(), "1".to_string());
+        tc.proto.insert("tcp_nodelay".to_string(), "no".to_string());
+        tc.proto.insert("crt".to_string(), "crt".to_string());
+        tc.proto.insert("key".to_string(), "key".to_string());
+        tc.proto.insert("verify_peer".to_string(), "yes".to_string());
+        tc.proto.insert("use_sni".to_string(), "yes".to_string());
+        tc.proto.insert("sni_servername".to_string(), "testproxy".to_string());
+        tc.proto.insert("verify_hostname".to_string(), "yes".to_string());
+        tc.proto.insert("ciphers".to_string(), "HIGH".to_string());
+        tc.proto.insert("min_proto_version".to_string(), "tls11".to_string());
+        tc.proto.insert("max_proto_version".to_string(), "tls12".to_string());
+        tc.proto.insert("no_ssl2".to_string(), "yes".to_string());
+        tc.proto.insert("no_ssl3".to_string(), "yes".to_string());
+        tc.proto.insert("no_tls10".to_string(), "yes".to_string());
+        tc.proto.insert("no_tls11".to_string(), "yes".to_string());
+        tc.proto.insert("no_tls12".to_string(), "yes".to_string());
+        tc.proto.insert("no_tls13".to_string(), "yes".to_string());
+        tc.proto.insert("compression".to_string(), "yes".to_string());
+        tc.proto.insert("ecdhcurve".to_string(), "ecdhcurve".to_string());
+        tc.proto.insert("set_ecdhcurve".to_string(), "yes".to_string());
+
+        let proto = configure_proto(&tc);
+
+        assert_eq!(proto.proto, Proto::Ssl);
+        assert_eq!(proto.connect_timeout, 1);
+        assert_eq!(proto.read_timeout, 1);
+        assert_eq!(proto.write_timeout, 1);
+        assert_eq!(proto.ip_ttl, 1);
+        assert_eq!(proto.tcp_nodelay, false);
+        assert_eq!(proto.crt, "crt".to_string());
+        assert_eq!(proto.key, "key".to_string());
+        assert_eq!(proto.verify_peer, true);
+        assert_eq!(proto.use_sni, true);
+        assert_eq!(proto.sni_servername, "testproxy".to_string());
+        assert_eq!(proto.verify_hostname, true);
+        assert_eq!(proto.ciphers, "HIGH".to_string());
+        assert_eq!(proto.min_proto_version, "tls11".to_string());
+        assert_eq!(proto.max_proto_version, "tls12".to_string());
+        assert_eq!(proto.no_ssl2, true);
+        assert_eq!(proto.no_ssl3, true);
+        assert_eq!(proto.no_tls10, true);
+        assert_eq!(proto.no_tls11, true);
+        assert_eq!(proto.no_tls12, true);
+        assert_eq!(proto.no_tls13, true);
+        assert_eq!(proto.compression, true);
+        assert_eq!(proto.ecdhcurve, "ecdhcurve".to_string());
+        assert_eq!(proto.set_ecdhcurve, true);
     }
 }

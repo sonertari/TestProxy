@@ -926,3 +926,277 @@ pub fn ssl_nid_by_name(s: &str) -> i32 {
     }
     nid
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use manager::configure_proto;
+
+    #[test]
+    fn test_testend_enum() {
+        assert_eq!(format!("{}", TestEnd::Client), "client");
+        assert_eq!(format!("{}", TestEnd::Server), "server");
+        assert_eq!(format!("{}", TestEnd::None), "none");
+
+        assert_eq!(TestEnd::from_str("client").unwrap(), TestEnd::Client);
+        assert_eq!(TestEnd::from_str("server").unwrap(), TestEnd::Server);
+    }
+
+    #[test]
+    fn test_command_enum() {
+        assert_eq!(format!("{}", Command::Send), "send");
+        assert_eq!(format!("{}", Command::Recv), "recv");
+        assert_eq!(format!("{}", Command::SslConnectFail), "sslconnectfail");
+        assert_eq!(format!("{}", Command::Timeout), "timeout");
+        assert_eq!(format!("{}", Command::Quit), "quit");
+        assert_eq!(format!("{}", Command::Fail), "fail");
+        assert_eq!(format!("{}", Command::KeepAlive), "keepalive");
+        assert_eq!(format!("{}", Command::Ready), "ready");
+        assert_eq!(format!("{}", Command::None), "none");
+
+        assert_eq!(Command::from_str("send").unwrap(), Command::Send);
+        assert_eq!(Command::from_str("recv").unwrap(), Command::Recv);
+        assert_eq!(Command::from_str("sslconnectfail").unwrap(), Command::SslConnectFail);
+        assert_eq!(Command::from_str("timeout").unwrap(), Command::Timeout);
+    }
+
+    #[test]
+    fn test_is_action_command() {
+        assert_eq!(Command::Send.is_action_command(), true);
+        assert_eq!(Command::Recv.is_action_command(), true);
+        assert_eq!(Command::SslConnectFail.is_action_command(), true);
+        assert_eq!(Command::Timeout.is_action_command(), true);
+        assert_eq!(Command::Quit.is_action_command(), false);
+        assert_eq!(Command::Fail.is_action_command(), false);
+        assert_eq!(Command::KeepAlive.is_action_command(), false);
+        assert_eq!(Command::Ready.is_action_command(), false);
+        assert_eq!(Command::None.is_action_command(), false);
+    }
+
+    #[test]
+    fn test_reset_command() {
+        // Necessary minimum config to create a TestEndBase
+        let (srv2mgr_tx, _srv2mgr_rx) = mpsc::channel::<Msg>();
+        let (_mgr2srv_tx, mgr2srv_rx) = mpsc::channel::<Msg>();
+        let mgr2srv_rx = Arc::new(Mutex::new(mgr2srv_rx));
+
+        let tc = TestConfig { proto: BTreeMap::new(), client: BTreeMap::new(), server: BTreeMap::new() };
+        let proto = configure_proto(&tc);
+
+        let mut c = BTreeMap::new();
+        c.insert("ip".to_string(), "".to_string());
+        c.insert("port".to_string(), "".to_string());
+
+        let mut te = TestEndBase::new("".to_string(), srv2mgr_tx, mgr2srv_rx, proto, c);
+
+        te.cmd = Command::Send;
+        te.payload = "payload".to_string();
+        let mut assert = Assertion::new();
+        assert.insert("==".to_string(), vec!["TLSv12".to_string()]);
+        te.assert.insert("ssl_proto_version".to_string(), assert);
+        te.recv_payload = "recv_payload".to_string();
+        te.recv_trials = 1;
+        te.cmd_trials = 1;
+        te.disconnect_detect_trials = 1;
+
+        te.reset_command();
+
+        assert_eq!(te.cmd, Command::None);
+        assert_eq!(te.payload, "");
+        assert_eq!(te.assert, BTreeMap::new());
+        assert_eq!(te.recv_payload, "");
+        assert_eq!(te.recv_trials, 0);
+        assert_eq!(te.cmd_trials, 0);
+        assert_eq!(te.disconnect_detect_trials, 0);
+    }
+
+    #[test]
+    fn test_check_command_timeout() {
+        // Necessary minimum config to create a TestEndBase
+        let (srv2mgr_tx, _srv2mgr_rx) = mpsc::channel::<Msg>();
+        let (_mgr2srv_tx, mgr2srv_rx) = mpsc::channel::<Msg>();
+        let mgr2srv_rx = Arc::new(Mutex::new(mgr2srv_rx));
+
+        let tc = TestConfig { proto: BTreeMap::new(), client: BTreeMap::new(), server: BTreeMap::new() };
+        let proto = configure_proto(&tc);
+
+        let mut c = BTreeMap::new();
+        c.insert("ip".to_string(), "".to_string());
+        c.insert("port".to_string(), "".to_string());
+
+        let mut te = TestEndBase::new("".to_string(), srv2mgr_tx, mgr2srv_rx, proto, c);
+
+        for _ in 1..MAX_CMD_TRIALS+1 {
+            assert_eq!(te.check_command_timeout(), Ok(()));
+        }
+        assert_eq!(te.check_command_timeout(), Err(CommandError::Fail));
+    }
+
+    #[test]
+    fn test_assert_str() {
+        // Necessary minimum config to create a TestEndBase
+        let (srv2mgr_tx, _srv2mgr_rx) = mpsc::channel::<Msg>();
+        let (_mgr2srv_tx, mgr2srv_rx) = mpsc::channel::<Msg>();
+        let mgr2srv_rx = Arc::new(Mutex::new(mgr2srv_rx));
+
+        let tc = TestConfig{ proto: BTreeMap::new(), client: BTreeMap::new(), server: BTreeMap::new() };
+        let proto = configure_proto(&tc);
+
+        let mut c = BTreeMap::new();
+        c.insert("ip".to_string(), "".to_string());
+        c.insert("port".to_string(), "".to_string());
+
+        let mut te = TestEndBase::new("".to_string(), srv2mgr_tx, mgr2srv_rx, proto, c);
+
+        // Test "=="
+        let mut assert = Assertion::new();
+        assert.insert("==".to_string(), vec!["TLSv12".to_string()]);
+        te.assert.insert("ssl_proto_version".to_string(), assert);
+
+        assert_eq!(te.assert_str("ssl_proto_version", "TLSv12"), false);
+        assert_eq!(te.assert_str("ssl_proto_version", "TLSv1"), true);
+        assert_eq!(te.assert_str("ssl_proto_version", "TLSv11"), true);
+        assert_eq!(te.assert_str("ssl_proto_version", "TLSv13"), true);
+
+        let mut assert = Assertion::new();
+        assert.insert("==".to_string(), vec!["TLSv1".to_string(), "TLSv12".to_string()]);
+        te.assert.insert("ssl_proto_version".to_string(), assert);
+
+        assert_eq!(te.assert_str("ssl_proto_version", "TLSv12"), false);
+        assert_eq!(te.assert_str("ssl_proto_version", "TLSv1"), false);
+        assert_eq!(te.assert_str("ssl_proto_version", "TLSv11"), true);
+        assert_eq!(te.assert_str("ssl_proto_version", "TLSv13"), true);
+
+        // Test "!="
+        let mut assert = Assertion::new();
+        assert.insert("!=".to_string(), vec!["TLSv12".to_string()]);
+        te.assert.insert("ssl_proto_version".to_string(), assert);
+
+        assert_eq!(te.assert_str("ssl_proto_version", "TLSv12"), true);
+        assert_eq!(te.assert_str("ssl_proto_version", "TLSv1"), false);
+        assert_eq!(te.assert_str("ssl_proto_version", "TLSv11"), false);
+        assert_eq!(te.assert_str("ssl_proto_version", "TLSv13"), false);
+
+        let mut assert = Assertion::new();
+        assert.insert("!=".to_string(), vec!["TLSv1".to_string(), "TLSv12".to_string()]);
+        te.assert.insert("ssl_proto_version".to_string(), assert);
+
+        assert_eq!(te.assert_str("ssl_proto_version", "TLSv12"), true);
+        assert_eq!(te.assert_str("ssl_proto_version", "TLSv1"), true);
+        assert_eq!(te.assert_str("ssl_proto_version", "TLSv11"), false);
+        assert_eq!(te.assert_str("ssl_proto_version", "TLSv13"), false);
+
+        // Test "match"
+        let mut assert = Assertion::new();
+        assert.insert("match".to_string(), vec!["^TLSv1.[1-3]?$".to_string()]);
+        te.assert.insert("ssl_proto_version".to_string(), assert);
+
+        assert_eq!(te.assert_str("ssl_proto_version", "TLSv12"), false);
+        assert_eq!(te.assert_str("ssl_proto_version", "TLSv1"), true);
+        assert_eq!(te.assert_str("ssl_proto_version", "TLSv11"), false);
+        assert_eq!(te.assert_str("ssl_proto_version", "TLSv13"), false);
+
+        // Test "!match"
+        let mut assert = Assertion::new();
+        assert.insert("!match".to_string(), vec!["^TLSv1.[1-3]?$".to_string()]);
+        te.assert.insert("ssl_proto_version".to_string(), assert);
+
+        assert_eq!(te.assert_str("ssl_proto_version", "TLSv12"), true);
+        assert_eq!(te.assert_str("ssl_proto_version", "TLSv1"), false);
+        assert_eq!(te.assert_str("ssl_proto_version", "TLSv11"), true);
+        assert_eq!(te.assert_str("ssl_proto_version", "TLSv13"), true);
+    }
+
+    #[test]
+    fn test_assert_date() {
+        // Necessary minimum config to create a TestEndBase
+        let (srv2mgr_tx, _srv2mgr_rx) = mpsc::channel::<Msg>();
+        let (_mgr2srv_tx, mgr2srv_rx) = mpsc::channel::<Msg>();
+        let mgr2srv_rx = Arc::new(Mutex::new(mgr2srv_rx));
+
+        let tc = TestConfig{ proto: BTreeMap::new(), client: BTreeMap::new(), server: BTreeMap::new() };
+        let proto = configure_proto(&tc);
+
+        let mut c = BTreeMap::new();
+        c.insert("ip".to_string(), "".to_string());
+        c.insert("port".to_string(), "".to_string());
+
+        let mut te = TestEndBase::new("".to_string(), srv2mgr_tx, mgr2srv_rx, proto, c);
+
+        // In the tests, we use 3 days from now
+        let now: &Asn1TimeRef = &Asn1Time::days_from_now(0).unwrap() as &Asn1TimeRef;
+        let tomorrow = &Asn1Time::days_from_now(1).unwrap() as &Asn1TimeRef;
+        let day_after_tomorrow = &Asn1Time::days_from_now(2).unwrap() as &Asn1TimeRef;
+
+        // Test ">="
+        let mut assert = Assertion::new();
+        // Compare with today
+        assert.insert(">=".to_string(), vec!["0".to_string()]);
+        te.assert.insert("peer_certificate_not_before".to_string(), assert);
+
+        assert_eq!(te.assert_date("peer_certificate_not_before", now), false);
+        assert_eq!(te.assert_date("peer_certificate_not_before", tomorrow), false);
+        assert_eq!(te.assert_date("peer_certificate_not_before", day_after_tomorrow), false);
+
+        let mut assert = Assertion::new();
+        // Compare with tomorrow
+        assert.insert(">=".to_string(), vec!["+1".to_string()]);
+        te.assert.insert("peer_certificate_not_before".to_string(), assert);
+
+        assert_eq!(te.assert_date("peer_certificate_not_before", now), true);
+        assert_eq!(te.assert_date("peer_certificate_not_before", tomorrow), false);
+        assert_eq!(te.assert_date("peer_certificate_not_before", day_after_tomorrow), false);
+
+        let mut assert = Assertion::new();
+        // Compare with yesterday
+        assert.insert(">=".to_string(), vec!["-1".to_string()]);
+        te.assert.insert("peer_certificate_not_before".to_string(), assert);
+
+        assert_eq!(te.assert_date("peer_certificate_not_before", now), false);
+        assert_eq!(te.assert_date("peer_certificate_not_before", tomorrow), false);
+        assert_eq!(te.assert_date("peer_certificate_not_before", day_after_tomorrow), false);
+
+        // Test "<="
+        let mut assert = Assertion::new();
+        // Compare with today
+        assert.insert("<=".to_string(), vec!["0".to_string()]);
+        te.assert.insert("peer_certificate_not_before".to_string(), assert);
+
+        assert_eq!(te.assert_date("peer_certificate_not_before", now), false);
+        assert_eq!(te.assert_date("peer_certificate_not_before", tomorrow), true);
+        assert_eq!(te.assert_date("peer_certificate_not_before", day_after_tomorrow), true);
+
+        let mut assert = Assertion::new();
+        // Compare with tomorrow
+        assert.insert("<=".to_string(), vec!["+1".to_string()]);
+        te.assert.insert("peer_certificate_not_before".to_string(), assert);
+
+        assert_eq!(te.assert_date("peer_certificate_not_before", now), false);
+        assert_eq!(te.assert_date("peer_certificate_not_before", tomorrow), false);
+        assert_eq!(te.assert_date("peer_certificate_not_before", day_after_tomorrow), true);
+
+        let mut assert = Assertion::new();
+        // Compare with yesterday
+        assert.insert("<=".to_string(), vec!["-1".to_string()]);
+        te.assert.insert("peer_certificate_not_before".to_string(), assert);
+
+        assert_eq!(te.assert_date("peer_certificate_not_before", now), true);
+        assert_eq!(te.assert_date("peer_certificate_not_before", tomorrow), true);
+        assert_eq!(te.assert_date("peer_certificate_not_before", day_after_tomorrow), true);
+    }
+
+    #[test]
+    fn test_str2sslversion() {
+        assert_eq!(str2sslversion("ssl3"), SslVersion::SSL3);
+        assert_eq!(str2sslversion("tls10"), SslVersion::TLS1);
+        assert_eq!(str2sslversion("tls11"), SslVersion::TLS1_1);
+        assert_eq!(str2sslversion("tls12"), SslVersion::TLS1_2);
+        assert_eq!(str2sslversion("tls13"), SslVersion::TLS1_3);
+        assert_eq!(str2sslversion("ssl2"), SslVersion::TLS1_2);
+    }
+
+    #[test]
+    fn test_ssl_nid_by_name() {
+        assert_eq!(ssl_nid_by_name("prime256v1"), Nid::X9_62_PRIME256V1.as_raw());
+    }
+}

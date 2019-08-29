@@ -86,3 +86,18 @@ fn num2level(level: i32) -> LevelFilter {
         _ => panic!("Log level not supported"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_num2level() {
+        assert_eq!(num2level(0), LevelFilter::Off);
+        assert_eq!(num2level(1), LevelFilter::Error);
+        assert_eq!(num2level(2), LevelFilter::Warn);
+        assert_eq!(num2level(3), LevelFilter::Info);
+        assert_eq!(num2level(4), LevelFilter::Debug);
+        assert_eq!(num2level(5), LevelFilter::Trace);
+    }
+}
