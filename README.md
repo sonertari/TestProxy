@@ -1,4 +1,5 @@
 # TestProxy - Tool for end-to-end testing of proxy servers
+[![Version](https://img.shields.io/crates/v/testproxy.svg)](https://crates.io/crates/testproxy)
 
 Copyright (C) 2019, [Soner Tari](http://comixwall.org).  
 https://github.com/sonertari/TestProxy
