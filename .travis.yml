@@ -1,0 +1,14 @@
+language: rust
+
+rust:
+  - stable
+
+os:
+  - osx
+  - linux
+
+env:
+  - RUST_BACKTRACE=1
+
+script:
+  - cargo test --verbose --all
