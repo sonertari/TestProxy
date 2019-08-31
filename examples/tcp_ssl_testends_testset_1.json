@@ -1,19 +1,37 @@
 {
-  "comment": "Tests for incompatible protocol use",
+  "comment": "Tests for tcp connection over ssl proxyspec",
   "configs": {
     "1": {
+      "comment": "Test should pass without proto validation enabled",
       "proto": {
         "comment": "Test config should always have the proto key"
       },
       "client": {
         "proto": "tcp",
         "ip": "127.0.0.1",
-        "port": "8444"
+        "port": "8441"
       },
       "server": {
         "proto": "ssl",
         "ip": "127.0.0.1",
-        "port": "9444",
+        "port": "9441",
+        "crt": "server.crt",
+        "key": "server.key"
+      }
+    },
+    "2": {
+      "comment": "Test should pass with proto validation enabled",
+      "proto": {
+      },
+      "client": {
+        "proto": "tcp",
+        "ip": "127.0.0.1",
+        "port": "8442"
+      },
+      "server": {
+        "proto": "ssl",
+        "ip": "127.0.0.1",
+        "port": "9442",
         "crt": "server.crt",
         "key": "server.key"
       }
