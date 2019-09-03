@@ -928,9 +928,12 @@ pub fn ssl_nid_by_name(s: &str) -> i32 {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub mod tests {
+    use std::sync::mpsc::Receiver;
+
     use manager::configure_proto;
+
+    use super::*;
 
     #[test]
     fn test_testend_enum() {
@@ -973,21 +976,31 @@ mod tests {
         assert_eq!(Command::None.is_action_command(), false);
     }
 
-    #[test]
-    fn test_reset_command() {
-        // Necessary minimum config to create a TestEndBase
-        let (srv2mgr_tx, _srv2mgr_rx) = mpsc::channel::<Msg>();
-        let (_mgr2srv_tx, mgr2srv_rx) = mpsc::channel::<Msg>();
-        let mgr2srv_rx = Arc::new(Mutex::new(mgr2srv_rx));
+    /// Returns necessary minimum params to create a TestEndBase
+    /// Used by client and server modules, hence returns tc too
+    pub fn create_testendbase_params() -> (TestConfig, ProtoConfig, Sender<Msg>, Arc<Mutex<Receiver<Msg>>>) {
+        let (tx, _) = mpsc::channel::<Msg>();
+        let (_, rx) = mpsc::channel::<Msg>();
+        let rx = Arc::new(Mutex::new(rx));
 
         let tc = TestConfig { proto: BTreeMap::new(), client: BTreeMap::new(), server: BTreeMap::new() };
         let proto = configure_proto(&tc);
+        (tc, proto, tx, rx)
+    }
+
+    fn create_testendbase() -> TestEndBase {
+        let (_tc, proto, tx, rx) = create_testendbase_params();
 
         let mut c = BTreeMap::new();
         c.insert("ip".to_string(), "".to_string());
         c.insert("port".to_string(), "".to_string());
 
-        let mut te = TestEndBase::new("".to_string(), srv2mgr_tx, mgr2srv_rx, proto, c);
+        TestEndBase::new("".to_string(), tx, rx, proto, c)
+    }
+
+    #[test]
+    fn test_reset_command() {
+        let mut te = create_testendbase();
 
         te.cmd = Command::Send;
         te.payload = "payload".to_string();
@@ -1012,21 +1025,9 @@ mod tests {
 
     #[test]
     fn test_check_command_timeout() {
-        // Necessary minimum config to create a TestEndBase
-        let (srv2mgr_tx, _srv2mgr_rx) = mpsc::channel::<Msg>();
-        let (_mgr2srv_tx, mgr2srv_rx) = mpsc::channel::<Msg>();
-        let mgr2srv_rx = Arc::new(Mutex::new(mgr2srv_rx));
+        let mut te = create_testendbase();
 
-        let tc = TestConfig { proto: BTreeMap::new(), client: BTreeMap::new(), server: BTreeMap::new() };
-        let proto = configure_proto(&tc);
-
-        let mut c = BTreeMap::new();
-        c.insert("ip".to_string(), "".to_string());
-        c.insert("port".to_string(), "".to_string());
-
-        let mut te = TestEndBase::new("".to_string(), srv2mgr_tx, mgr2srv_rx, proto, c);
-
-        for _ in 1..MAX_CMD_TRIALS+1 {
+        for _ in 1..MAX_CMD_TRIALS + 1 {
             assert_eq!(te.check_command_timeout(), Ok(()));
         }
         assert_eq!(te.check_command_timeout(), Err(CommandError::Fail));
@@ -1034,19 +1035,7 @@ mod tests {
 
     #[test]
     fn test_assert_str() {
-        // Necessary minimum config to create a TestEndBase
-        let (srv2mgr_tx, _srv2mgr_rx) = mpsc::channel::<Msg>();
-        let (_mgr2srv_tx, mgr2srv_rx) = mpsc::channel::<Msg>();
-        let mgr2srv_rx = Arc::new(Mutex::new(mgr2srv_rx));
-
-        let tc = TestConfig{ proto: BTreeMap::new(), client: BTreeMap::new(), server: BTreeMap::new() };
-        let proto = configure_proto(&tc);
-
-        let mut c = BTreeMap::new();
-        c.insert("ip".to_string(), "".to_string());
-        c.insert("port".to_string(), "".to_string());
-
-        let mut te = TestEndBase::new("".to_string(), srv2mgr_tx, mgr2srv_rx, proto, c);
+        let mut te = create_testendbase();
 
         // Test "=="
         let mut assert = Assertion::new();
@@ -1109,19 +1098,7 @@ mod tests {
 
     #[test]
     fn test_assert_date() {
-        // Necessary minimum config to create a TestEndBase
-        let (srv2mgr_tx, _srv2mgr_rx) = mpsc::channel::<Msg>();
-        let (_mgr2srv_tx, mgr2srv_rx) = mpsc::channel::<Msg>();
-        let mgr2srv_rx = Arc::new(Mutex::new(mgr2srv_rx));
-
-        let tc = TestConfig{ proto: BTreeMap::new(), client: BTreeMap::new(), server: BTreeMap::new() };
-        let proto = configure_proto(&tc);
-
-        let mut c = BTreeMap::new();
-        c.insert("ip".to_string(), "".to_string());
-        c.insert("port".to_string(), "".to_string());
-
-        let mut te = TestEndBase::new("".to_string(), srv2mgr_tx, mgr2srv_rx, proto, c);
+        let mut te = create_testendbase();
 
         // In the tests, we use 3 days from now
         let now: &Asn1TimeRef = &Asn1Time::days_from_now(0).unwrap() as &Asn1TimeRef;

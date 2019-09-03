@@ -249,24 +249,18 @@ impl Client {
 
 #[cfg(test)]
 mod tests {
+    use testend::tests::create_testendbase_params;
+
     use super::*;
-    use testend::TestConfig;
-    use manager::configure_proto;
 
     #[test]
     fn test_name() {
-        let (cli2mgr_tx, _cli2mgr_rx) = mpsc::channel();
-        let (_mgr2cli_tx, mgr2cli_rx) = mpsc::channel();
-        let mgr2cli_rx = Arc::new(Mutex::new(mgr2cli_rx));
+        let (mut tc, proto, tx, rx) = create_testendbase_params();
+        tc.client.insert("ip".to_string(), "".to_string());
+        tc.client.insert("port".to_string(), "".to_string());
 
-        let mut testconfig = TestConfig { proto: BTreeMap::new(), client: BTreeMap::new(), server: BTreeMap::new() };
-        let proto = configure_proto(&testconfig);
-
-        testconfig.client.insert("ip".to_string(), "".to_string());
-        testconfig.client.insert("port".to_string(), "".to_string());
-
-        let client = Client::new(1, 1, 1, 1, cli2mgr_tx.clone(), Arc::clone(&mgr2cli_rx),
-                                     proto.clone(), testconfig.client.clone());
+        let client = Client::new(1, 1, 1, 1, tx.clone(), Arc::clone(&rx),
+                                 proto.clone(), tc.client.clone());
 
         assert_eq!(client.base.name, "CLI.h1.s1.c1.t1");
     }
