@@ -183,14 +183,13 @@ impl Server {
 
         let mut stream_id = 1;
         let mut tcp_stream_trials = 0;
-        let mut exit;
         let mut failed = false;
 
         // nonblocking is necessary to get the next stream (connection)
         server.set_nonblocking(true).unwrap();
 
         // Manager will not start the tests until children reply the Ready command
-        exit = self.base.process_ready_command(&mut failed);
+        let mut exit = self.base.process_ready_command(&mut failed);
 
         if !exit && !failed {
             self.base.cmd_trials = 0;

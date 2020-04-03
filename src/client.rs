@@ -222,9 +222,9 @@ impl Client {
         let mut failed = false;
 
         // Manager will not start the tests until children reply the Ready command
-        self.base.process_ready_command(&mut failed);
+        let exit = self.base.process_ready_command(&mut failed);
 
-        if !failed {
+        if !exit && !failed {
             if let Ok(tcp_stream) = self.connect_tcp_stream(&mut failed) {
                 self.base.configure_tcp_stream(&tcp_stream);
 

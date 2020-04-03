@@ -570,6 +570,7 @@ impl TestEndBase {
                 if e == CommandError::Fail {
                     *failed = true;
                 } else if e == CommandError::Disconnect {
+                    // Actually CommandError::Disconnect error is never set while processing the ready command
                     break false;
                 }
                 break true;
