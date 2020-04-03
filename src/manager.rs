@@ -258,6 +258,7 @@ impl Manager {
         let mut wait_children_bootup_trials = 0;
         let mut server_ready = false;
         let mut client_ready = false;
+        const WAIT_CHILDREN_BOOTUP_TIMEOUT: i32 = 100;
 
         self.send_server_ready();
         loop {
@@ -283,7 +284,7 @@ impl Manager {
 
             wait_children_bootup_trials += 1;
             trace!(target: &self.name, "Wait children bootup loop trial {}", wait_children_bootup_trials);
-            if wait_children_bootup_trials > 10 {
+            if wait_children_bootup_trials > WAIT_CHILDREN_BOOTUP_TIMEOUT {
                 error!(target: &self.name, "Wait children bootup loop timed out");
                 self.test_failed = true;
                 // Send quit command to both ends
