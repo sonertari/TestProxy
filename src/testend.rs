@@ -977,19 +977,18 @@ pub mod tests {
     }
 
     /// Returns necessary minimum params to create a TestEndBase
-    /// Used by client and server modules, hence returns tc too
+    /// Used by test modules for client and server, hence returns tc too
     pub fn create_testendbase_params() -> (TestConfig, ProtoConfig, Sender<Msg>, Arc<Mutex<Receiver<Msg>>>) {
         let (tx, _) = mpsc::channel::<Msg>();
         let (_, rx) = mpsc::channel::<Msg>();
         let rx = Arc::new(Mutex::new(rx));
-
         let tc = TestConfig { proto: BTreeMap::new(), client: BTreeMap::new(), server: BTreeMap::new() };
         let proto = configure_proto(&tc);
         (tc, proto, tx, rx)
     }
 
     fn create_testendbase() -> TestEndBase {
-        let (_tc, proto, tx, rx) = create_testendbase_params();
+        let (_, proto, tx, rx) = create_testendbase_params();
 
         let mut c = BTreeMap::new();
         c.insert("ip".to_string(), "".to_string());
