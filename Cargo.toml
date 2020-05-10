@@ -13,7 +13,7 @@ license = "GPL-3.0"
 
 [dependencies]
 openssl-probe = "0.1.2"
-openssl = { version = "0.10.22", features = ["vendored"] }
+openssl = { version = "0.10.29", features = ["vendored"] }
 structopt = "0.2.15"
 time = "0.1.42"
 colored = "1.7.0"
