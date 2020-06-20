@@ -91,7 +91,8 @@ impl Client {
             scb.set_private_key_file(&self.base.proto.key, SslFiletype::PEM).expect("Cannot set key file");
         }
 
-        scb.set_cipher_list(&self.base.proto.ciphers).expect("Cannot set cipher list");
+        scb.set_cipher_list(&self.base.proto.cipher_list).expect("Cannot set cipher_list");
+        scb.set_ciphersuites(&self.base.proto.ciphersuites).expect("Cannot set ciphersuites");
 
         scb.set_min_proto_version(Some(str2sslversion(&self.base.proto.min_proto_version))).expect("Cannot set min proto version");
         scb.set_max_proto_version(Some(str2sslversion(&self.base.proto.max_proto_version))).expect("Cannot set max proto version");

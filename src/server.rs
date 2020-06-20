@@ -76,7 +76,10 @@ impl Server {
     }
 
     fn configure_ssl(&self) -> SslAcceptor {
-        let mut sab = SslAcceptor::mozilla_intermediate(SslMethod::tls()).unwrap();
+        let mut sab = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls()).unwrap();
+        // Re-enable tls1 and tls11, which were disabled by mozilla_intermediate_v5()
+        sab.clear_options(SslOptions::NO_TLSV1 | SslOptions::NO_TLSV1_1);
+
         if self.base.proto.verify_peer {
             sab.set_verify(SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT);
         } else {
@@ -86,7 +89,8 @@ impl Server {
         sab.set_certificate_file(&self.base.proto.crt, SslFiletype::PEM).expect("Cannot set crt file");
         sab.set_private_key_file(&self.base.proto.key, SslFiletype::PEM).expect("Cannot set key file");
 
-        sab.set_cipher_list(&self.base.proto.ciphers).expect("Cannot set cipher list");
+        sab.set_cipher_list(&self.base.proto.cipher_list).expect("Cannot set cipher_list");
+        sab.set_ciphersuites(&self.base.proto.ciphersuites).expect("Cannot set ciphersuites");
 
         sab.set_min_proto_version(Some(str2sslversion(&self.base.proto.min_proto_version))).expect("Cannot set min proto version");
         sab.set_max_proto_version(Some(str2sslversion(&self.base.proto.max_proto_version))).expect("Cannot set max proto version");

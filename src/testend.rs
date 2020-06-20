@@ -125,7 +125,8 @@ pub struct ProtoConfig {
     pub use_sni: bool,
     pub sni_servername: String,
     pub verify_hostname: bool,
-    pub ciphers: String,
+    pub cipher_list: String,
+    pub ciphersuites: String,
     pub min_proto_version: String,
     pub max_proto_version: String,
     pub no_ssl2: bool,
@@ -405,8 +406,12 @@ impl TestEndBase {
             self.proto.verify_hostname = config["verify_hostname"].eq("yes");
         }
 
-        if config.contains_key("ciphers") {
-            self.proto.ciphers = config["ciphers"].clone();
+        if config.contains_key("cipher_list") {
+            self.proto.cipher_list = config["cipher_list"].clone();
+        }
+
+        if config.contains_key("ciphersuites") {
+            self.proto.ciphersuites = config["ciphersuites"].clone();
         }
 
         if config.contains_key("min_proto_version") {
@@ -452,7 +457,7 @@ impl TestEndBase {
     }
 
     pub fn configure_tcp_stream(&self, tcp_stream: &TcpStream) {
-        tcp_stream.set_read_timeout(Some(Duration::from_millis(self.proto.read_timeout))).expect("Cannot set write_timeout");
+        tcp_stream.set_read_timeout(Some(Duration::from_millis(self.proto.read_timeout))).expect("Cannot set read_timeout");
         tcp_stream.set_write_timeout(Some(Duration::from_millis(self.proto.write_timeout))).expect("Cannot set write_timeout");
         tcp_stream.set_ttl(self.proto.ip_ttl).expect("Cannot set ip_ttl");
         if self.proto.tcp_nodelay {
@@ -805,6 +810,7 @@ impl TestEndBase {
     }
 
     fn assert_str(&self, key: &str, value: &str) -> bool {
+        let dummy_regex = Regex::new("").unwrap();
         let mut rv = false;
         for (o, vs) in self.assert[key].iter() {
             let mut failed = false;
@@ -830,7 +836,7 @@ impl TestEndBase {
                 }
                 "match" => {
                     for v in vs.iter() {
-                        if !Regex::new(v).unwrap().is_match(value) {
+                        if !Regex::new(v).unwrap_or(dummy_regex.clone()).is_match(value) {
                             failed = true;
                             warn!(target: &self.name, "Assertion failed {} match {}, received: {}", key, v, value);
                         }
@@ -838,7 +844,7 @@ impl TestEndBase {
                 }
                 "!match" => {
                     for v in vs.iter() {
-                        if Regex::new(v).unwrap().is_match(value) {
+                        if Regex::new(v).unwrap_or(dummy_regex.clone()).is_match(value) {
                             failed = true;
                             warn!(target: &self.name, "Assertion failed {} !match {}, received: {}", key, v, value);
                         }

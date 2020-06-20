@@ -468,7 +468,8 @@ pub fn configure_proto(testconfig: &TestConfig) -> ProtoConfig {
     let mut use_sni = false;
     let mut sni_servername = "localhost".to_string();
     let mut verify_hostname = false;
-    let mut ciphers = "ALL:-aNULL".to_string();
+    let mut cipher_list = "ALL:-aNULL".to_string();
+    let mut ciphersuites = "TLS_AES_256_GCM_SHA384".to_string();
     let mut min_proto_version = "ssl3".to_string();
     let mut max_proto_version = "tls13".to_string();
     let mut no_ssl2 = false;
@@ -503,8 +504,11 @@ pub fn configure_proto(testconfig: &TestConfig) -> ProtoConfig {
         if testconfig.proto.contains_key("verify_hostname") {
             verify_hostname = testconfig.proto["verify_hostname"].eq("yes");
         }
-        if testconfig.proto.contains_key("ciphers") {
-            ciphers = testconfig.proto["ciphers"].clone();
+        if testconfig.proto.contains_key("cipher_list") {
+            cipher_list = testconfig.proto["cipher_list"].clone();
+        }
+        if testconfig.proto.contains_key("ciphersuites") {
+            ciphersuites = testconfig.proto["ciphersuites"].clone();
         }
         if testconfig.proto.contains_key("min_proto_version") {
             min_proto_version = testconfig.proto["min_proto_version"].clone();
@@ -551,7 +555,8 @@ pub fn configure_proto(testconfig: &TestConfig) -> ProtoConfig {
         use_sni,
         sni_servername,
         verify_hostname,
-        ciphers,
+        cipher_list,
+        ciphersuites,
         min_proto_version,
         max_proto_version,
         no_ssl2,
@@ -598,7 +603,8 @@ mod tests {
         assert_eq!(proto.use_sni, false);
         assert_eq!(proto.sni_servername, "localhost".to_string());
         assert_eq!(proto.verify_hostname, false);
-        assert_eq!(proto.ciphers, "ALL:-aNULL".to_string());
+        assert_eq!(proto.cipher_list, "ALL:-aNULL".to_string());
+        assert_eq!(proto.ciphersuites, "TLS_AES_256_GCM_SHA384".to_string());
         assert_eq!(proto.min_proto_version, "ssl3".to_string());
         assert_eq!(proto.max_proto_version, "tls13".to_string());
         assert_eq!(proto.no_ssl2, false);
@@ -624,7 +630,8 @@ mod tests {
         tc.proto.insert("use_sni".to_string(), "yes".to_string());
         tc.proto.insert("sni_servername".to_string(), "testproxy".to_string());
         tc.proto.insert("verify_hostname".to_string(), "yes".to_string());
-        tc.proto.insert("ciphers".to_string(), "HIGH".to_string());
+        tc.proto.insert("cipher_list".to_string(), "HIGH".to_string());
+        tc.proto.insert("ciphersuites".to_string(), "TLS_CHACHA20_POLY1305_SHA256".to_string());
         tc.proto.insert("min_proto_version".to_string(), "tls11".to_string());
         tc.proto.insert("max_proto_version".to_string(), "tls12".to_string());
         tc.proto.insert("no_ssl2".to_string(), "yes".to_string());
@@ -651,7 +658,8 @@ mod tests {
         assert_eq!(proto.use_sni, true);
         assert_eq!(proto.sni_servername, "testproxy".to_string());
         assert_eq!(proto.verify_hostname, true);
-        assert_eq!(proto.ciphers, "HIGH".to_string());
+        assert_eq!(proto.cipher_list, "HIGH".to_string());
+        assert_eq!(proto.ciphersuites, "TLS_CHACHA20_POLY1305_SHA256".to_string());
         assert_eq!(proto.min_proto_version, "tls11".to_string());
         assert_eq!(proto.max_proto_version, "tls12".to_string());
         assert_eq!(proto.no_ssl2, true);
