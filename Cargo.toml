@@ -3,13 +3,12 @@ name = "testproxy"
 description = "Tool for end-to-end testing of proxy servers"
 repository = "https://github.com/sonertari/TestProxy"
 homepage = "https://github.com/sonertari/TestProxy"
-version = "0.0.2"
+version = "0.0.3"
 authors = ["Soner Tari <sonertari@gmail.com>"]
 keywords = ["testproxy", "testing", "proxy", "end-to-end"]
 categories = ["development-tools::testing", "network-programming", "command-line-utilities"]
 readme = "README.md"
 license = "GPL-3.0"
-#edition = "2019"
 
 [dependencies]
 openssl-probe = "0.1.2"
