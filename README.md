@@ -2,7 +2,7 @@
 [![Version](https://img.shields.io/crates/v/testproxy.svg)](https://crates.io/crates/testproxy)
 [![Build Status](https://travis-ci.org/sonertari/TestProxy.svg?branch=master)](https://travis-ci.org/sonertari/TestProxy)
 
-Copyright (C) 2019, [Soner Tari](http://comixwall.org).  
+Copyright (C) 2019, 2020, [Soner Tari](http://comixwall.org).
 https://github.com/sonertari/TestProxy
 
 ## Overview
