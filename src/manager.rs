@@ -469,7 +469,7 @@ pub fn configure_proto(testconfig: &TestConfig) -> ProtoConfig {
     let mut sni_servername = "localhost".to_string();
     let mut verify_hostname = false;
     let mut cipher_list = "ALL:-aNULL".to_string();
-    let mut ciphersuites = "TLS_AES_256_GCM_SHA384".to_string();
+    let mut ciphersuites = "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256".to_string();
     let mut min_proto_version = "ssl3".to_string();
     let mut max_proto_version = "tls13".to_string();
     let mut no_ssl2 = false;
@@ -604,7 +604,7 @@ mod tests {
         assert_eq!(proto.sni_servername, "localhost".to_string());
         assert_eq!(proto.verify_hostname, false);
         assert_eq!(proto.cipher_list, "ALL:-aNULL".to_string());
-        assert_eq!(proto.ciphersuites, "TLS_AES_256_GCM_SHA384".to_string());
+        assert_eq!(proto.ciphersuites, "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256".to_string());
         assert_eq!(proto.min_proto_version, "ssl3".to_string());
         assert_eq!(proto.max_proto_version, "tls13".to_string());
         assert_eq!(proto.no_ssl2, false);
