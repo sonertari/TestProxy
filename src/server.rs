@@ -1,4 +1,4 @@
-// Copyright (C) 2019, 2020 Soner Tari <sonertari@gmail.com>
+// Copyright (C) 2019-2021 Soner Tari <sonertari@gmail.com>
 //
 // This file is part of TestProxy.
 //
@@ -59,7 +59,7 @@ impl Server {
     fn run_tcp(&mut self, tcp_stream: &TcpStream, failed: &mut bool) -> bool {
         self.base.cmd_trials = 0;
         loop {
-            if self.base.prev_cmd ==  Command::Reconnect {
+            if self.base.prev_cmd == Command::Reconnect {
                 debug!(target: &self.base.name, "Executing Reconnect command");
                 self.base.prev_cmd = Command::None;
                 break false;
@@ -154,7 +154,7 @@ impl Server {
         if let Ok(mut ssl_stream) = ssl_stream_result {
             self.base.cmd_trials = 0;
             exit = loop {
-                if self.base.prev_cmd ==  Command::Reconnect {
+                if self.base.prev_cmd == Command::Reconnect {
                     debug!(target: &self.base.name, "Executing Reconnect command");
                     self.base.prev_cmd = Command::None;
                     break false;

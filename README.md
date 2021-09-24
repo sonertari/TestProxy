@@ -2,7 +2,7 @@
 [![Version](https://img.shields.io/crates/v/testproxy.svg)](https://crates.io/crates/testproxy)
 [![Build Status](https://travis-ci.org/sonertari/TestProxy.svg?branch=master)](https://travis-ci.org/sonertari/TestProxy)
 
-Copyright (C) 2019, 2020, [Soner Tari](http://comixwall.org).
+Copyright (C) 2019-2021, [Soner Tari](https://github.com/sonertari).
 https://github.com/sonertari/TestProxy
 
 ## Overview
@@ -18,6 +18,10 @@ the client and the server to simulate this environment. It starts a manager
 thread to run the tests, and in turn the manager thread starts a client and a 
 server thread for each test. The manager sends commands to these client/server 
 pairs to execute the tests it is started for.
+
+The [SSLproxy](https://github.com/sonertari/SSLproxy) project uses TestProxy
+in its end-to-end tests. See the testproxy test sets in the SSLproxy sources
+to learn how to use TestProxy.
 
 ![Operation Diagram](examples/OperationDiagram.png)
 

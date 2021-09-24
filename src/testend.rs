@@ -1,4 +1,4 @@
-// Copyright (C) 2019, 2020 Soner Tari <sonertari@gmail.com>
+// Copyright (C) 2019-2021 Soner Tari <sonertari@gmail.com>
 //
 // This file is part of TestProxy.
 //
@@ -970,6 +970,7 @@ pub mod tests {
         assert_eq!(format!("{}", Command::Recv), "recv");
         assert_eq!(format!("{}", Command::SslConnectFail), "sslconnectfail");
         assert_eq!(format!("{}", Command::Timeout), "timeout");
+        assert_eq!(format!("{}", Command::Reconnect), "reconnect");
         assert_eq!(format!("{}", Command::Quit), "quit");
         assert_eq!(format!("{}", Command::Fail), "fail");
         assert_eq!(format!("{}", Command::KeepAlive), "keepalive");
@@ -980,6 +981,7 @@ pub mod tests {
         assert_eq!(Command::from_str("recv").unwrap(), Command::Recv);
         assert_eq!(Command::from_str("sslconnectfail").unwrap(), Command::SslConnectFail);
         assert_eq!(Command::from_str("timeout").unwrap(), Command::Timeout);
+        assert_eq!(Command::from_str("reconnect").unwrap(), Command::Reconnect);
     }
 
     #[test]
@@ -988,6 +990,7 @@ pub mod tests {
         assert_eq!(Command::Recv.is_action_command(), true);
         assert_eq!(Command::SslConnectFail.is_action_command(), true);
         assert_eq!(Command::Timeout.is_action_command(), true);
+        assert_eq!(Command::Reconnect.is_action_command(), false);
         assert_eq!(Command::Quit.is_action_command(), false);
         assert_eq!(Command::Fail.is_action_command(), false);
         assert_eq!(Command::KeepAlive.is_action_command(), false);
