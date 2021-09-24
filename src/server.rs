@@ -59,6 +59,12 @@ impl Server {
     fn run_tcp(&mut self, tcp_stream: &TcpStream, failed: &mut bool) -> bool {
         self.base.cmd_trials = 0;
         loop {
+            if self.base.prev_cmd ==  Command::Reconnect {
+                debug!(target: &self.base.name, "Executing Reconnect command");
+                self.base.prev_cmd = Command::None;
+                break false;
+            }
+
             if let Err(RecvTimeoutError::Disconnected) = self.base.get_command() {
                 break false;
             }
@@ -148,6 +154,12 @@ impl Server {
         if let Ok(mut ssl_stream) = ssl_stream_result {
             self.base.cmd_trials = 0;
             exit = loop {
+                if self.base.prev_cmd ==  Command::Reconnect {
+                    debug!(target: &self.base.name, "Executing Reconnect command");
+                    self.base.prev_cmd = Command::None;
+                    break false;
+                }
+
                 if let Err(RecvTimeoutError::Disconnected) = self.base.get_command() {
                     break false;
                 }

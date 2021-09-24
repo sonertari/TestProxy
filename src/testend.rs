@@ -215,6 +215,7 @@ pub enum Command {
     Recv,
     SslConnectFail,
     Timeout,
+    Reconnect,
     Quit,
     Fail,
     KeepAlive,
@@ -229,6 +230,7 @@ impl Command {
             Command::Recv => true,
             Command::SslConnectFail => true,
             Command::Timeout => true,
+            Command::Reconnect => false,
             Command::Quit => false,
             Command::Fail => false,
             Command::KeepAlive => false,
@@ -245,6 +247,7 @@ impl Display for Command {
             Command::Recv => write!(fmt, "recv"),
             Command::SslConnectFail => write!(fmt, "sslconnectfail"),
             Command::Timeout => write!(fmt, "timeout"),
+            Command::Reconnect => write!(fmt, "reconnect"),
             Command::Quit => write!(fmt, "quit"),
             Command::Fail => write!(fmt, "fail"),
             Command::KeepAlive => write!(fmt, "keepalive"),
@@ -262,6 +265,7 @@ impl FromStr for Command {
             "recv" => Ok(Command::Recv),
             "sslconnectfail" => Ok(Command::SslConnectFail),
             "timeout" => Ok(Command::Timeout),
+            "reconnect" => Ok(Command::Reconnect),
             cmd => {
                 error!("Command not supported: {}", cmd);
                 panic!("Command not supported")
@@ -334,6 +338,7 @@ pub struct TestEndBase {
     recv_trials: i32,
     pub cmd_trials: i32,
     disconnect_detect_trials: i32,
+    pub prev_cmd: Command,
 }
 
 impl TestEndBase {
@@ -352,6 +357,7 @@ impl TestEndBase {
             recv_trials: 0,
             cmd_trials: 0,
             disconnect_detect_trials: 0,
+            prev_cmd: Command::None,
         };
         testend.configure_proto(config);
         testend
@@ -730,6 +736,12 @@ impl TestEndBase {
     /// Executes commands which do not try to connect/send/recv
     pub fn execute_non_action_command(&mut self) -> CommandResult {
         match self.cmd {
+            Command::Reconnect => {
+                debug!(target: &self.name, "Received Reconnect command");
+                self.report_cmd_result(None).unwrap_or(());
+                // Signal the SSL stream loop to break out, which disconnects the current TCP stream
+                self.prev_cmd = Command::Reconnect;
+            }
             Command::Quit => {
                 debug!(target: &self.name, "Received Quit command");
                 self.reset_command();
