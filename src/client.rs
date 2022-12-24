@@ -1,4 +1,4 @@
-// Copyright (C) 2019-2021 Soner Tari <sonertari@gmail.com>
+// Copyright (C) 2019-2022 Soner Tari <sonertari@gmail.com>
 //
 // This file is part of TestProxy.
 //
