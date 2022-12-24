@@ -21,6 +21,7 @@ use colored::Colorize;
 use fern::colors::{Color, ColoredLevelConfig};
 use fern::Dispatch;
 use log::{Level, LevelFilter};
+use chrono::Utc;
 
 use super::config::Config;
 
@@ -37,8 +38,8 @@ pub fn configure_logging(config: &Config) {
         .format(move |out, message, record| {
             out.finish(format_args!(
                 "[{time}] [{level}] {sender}: {message}",
-                time = time::strftime(&date_time_format, &time::now())
-                    .unwrap()
+                time = Utc::now().format(&date_time_format)
+                    .to_string()
                     .magenta(),
                 level = colors.color(record.level()).to_string().underline(),
                 sender = record.target().on_blue(),

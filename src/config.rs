@@ -16,8 +16,8 @@
 // along with TestProxy.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::path::PathBuf;
-
 use structopt::StructOpt;
+use chrono::Local;
 
 #[derive(StructOpt, Debug, Clone, Eq, PartialEq)]
 #[structopt(
@@ -41,7 +41,7 @@ pub struct Config {
         takes_value = true,
         value_name = "LEVEL",
         default_value = "3",
-        raw(possible_values = r#"&["0", "1", "2", "3", "4", "5"]"#)
+        possible_values = &["0", "1", "2", "3", "4", "5"]
     )]
     pub verbosity: i32,
 
@@ -53,11 +53,11 @@ pub struct Config {
         takes_value = true,
         value_name = "STRING",
         default_value = "%X",
-        parse(try_from_str = "parse_datetime_format")
+        parse(from_str = parse_datetime_format)
     )]
     pub date_time_format: String,
 }
 
-fn parse_datetime_format(s: &str) -> Result<String, time::ParseError> {
-    time::strftime(s, &time::now()).map(|_| String::from(s))
+fn parse_datetime_format(s: &str) -> String {
+    Local::now().format(&s).to_string()
 }

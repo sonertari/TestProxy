@@ -75,13 +75,6 @@ pub struct TestState {
     pub assert: BTreeMap<String, Assertion>,
 }
 
-#[derive(Deserialize, Debug)]
-struct Test {
-    comment: String,
-    config: TestConfig,
-    states: BTreeMap<i32, BTreeMap<String, String>>,
-}
-
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum Proto {
     Tcp,
@@ -886,7 +879,7 @@ impl TestEndBase {
                 ">=" => {
                     for v in vs.iter() {
                         // v can be negative
-                        let now_plus_days = now.checked_add_signed(time::Duration::days(v.parse().unwrap())).unwrap();
+                        let now_plus_days = now.checked_add_signed(chrono::Duration::days(v.parse().unwrap())).unwrap();
                         if value < now_plus_days {
                             failed = true;
                             warn!(target: &self.name, "Assertion failed {} >= {}, received: {}", key, now_plus_days, value);
@@ -895,7 +888,7 @@ impl TestEndBase {
                 }
                 "<=" => {
                     for v in vs.iter() {
-                        let now_plus_days = now.checked_add_signed(time::Duration::days(v.parse().unwrap())).unwrap();
+                        let now_plus_days = now.checked_add_signed(chrono::Duration::days(v.parse().unwrap())).unwrap();
                         if value > now_plus_days {
                             failed = true;
                             warn!(target: &self.name, "Assertion failed {} <= {}, received: {}", key, now_plus_days, value);
