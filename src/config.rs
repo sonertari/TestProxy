@@ -56,6 +56,14 @@ pub struct Config {
         parse(from_str = parse_datetime_format)
     )]
     pub date_time_format: String,
+
+    /// Skip test harnesses, comma separated list of unsigned
+    #[structopt(
+        long = "skip-test-harness",
+        value_name = "LIST OF TEST HARNESSES",
+        default_value = "",
+    )]
+    pub skip_test_harness: String,
 }
 
 fn parse_datetime_format(s: &str) -> String {

@@ -63,8 +63,15 @@ fn main() {
 
     warn!("{}", testharnesses.comment);
 
+    let skip_test_harness: Vec<&str> = config.skip_test_harness.split(",").collect();
+
     let mut rv = 0;
     for (hid, testharness) in testharnesses.testharnesses {
+        if skip_test_harness.contains(&hid.to_string().as_str()) {
+            warn!("Skip test harness {}: {}", hid, testharness.comment);
+            continue;
+        }
+
         warn!("Start test harness {}: {}", hid, testharness.comment);
 
         let mut thread_handles = BTreeMap::new();
